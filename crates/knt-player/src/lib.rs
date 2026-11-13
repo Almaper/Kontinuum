@@ -27,12 +27,15 @@ pub struct Player {
     garbage: rtrb::Consumer<Command>,
     snapshot: triple_buffer::Output<Snapshot>,
     tap: Option<rtrb::Consumer<f32>>,
+    midi: Option<rtrb::Producer<Command>>,
 }
 
 /// The callback side.
 pub struct Audio {
     engine: Engine,
     commands: rtrb::Consumer<Command>,
+    /// The MIDI input's own queue (notes straight from the MIDI thread, no UI frame between).
+    midi: rtrb::Consumer<Command>,
     garbage: rtrb::Producer<Command>,
     snapshot: triple_buffer::Input<Snapshot>,
     tap: rtrb::Producer<f32>,
@@ -50,16 +53,19 @@ impl Player {
         let (si, so) = triple_buffer::triple_buffer(&engine.snapshot());
         let (tp, tc) = rtrb::RingBuffer::new(TAP);
         let tapping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (mp, mc) = rtrb::RingBuffer::new(COMMANDS);
         (
             Player {
                 commands: cp,
                 garbage: gc,
                 snapshot: so,
                 tap: Some(tc),
+                midi: Some(mp),
             },
             Audio {
                 engine,
                 commands: cc,
+                midi: mc,
                 garbage: gp,
                 snapshot: si,
                 tap: tp,
@@ -85,6 +91,12 @@ impl Player {
         self.snapshot.read()
     }
 
+    /// The MIDI queue's sending end (once): for the MIDI input's thread. Only boxless commands
+    /// (notes, drums) belong in it.
+    pub fn midi_sender(&mut self) -> Option<rtrb::Producer<Command>> {
+        self.midi.take()
+    }
+
     /// The tap's reading end (once): every sample the callback plays while
     /// [`Audio::tap_flag`] is set, interleaved stereo at [`RATE`].
     pub fn tap(&mut self) -> Option<rtrb::Consumer<f32>> {
@@ -102,6 +114,11 @@ impl Audio {
     pub fn render_f32(&mut self, out: &mut [f32]) {
         while self.garbage.slots() > 0 {
             let Ok(c) = self.commands.pop() else { break };
+            if let Some(old) = self.engine.command(c) {
+                let _ = self.garbage.push(old);
+            }
+        }
+        while let Ok(c) = self.midi.pop() {
             if let Some(old) = self.engine.command(c) {
                 let _ = self.garbage.push(old);
             }

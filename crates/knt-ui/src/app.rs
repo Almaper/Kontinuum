@@ -11,6 +11,7 @@ use eframe::egui::{
 use knt_engine::{AUTOS, CARTA, Command, Event, Layer, Mode, Params, Recipe, Snapshot, note_name};
 use knt_player::Player;
 
+use crate::midi::{Map, Midi, Msg, Target};
 use crate::stage;
 use crate::theme::{self, *};
 
@@ -41,6 +42,13 @@ pub struct App {
     /// What the window last read from the player.
     snap: Snapshot,
     status: Option<String>,
+    pub midi: Midi,
+    midi_map: Map,
+    /// The control waiting for a controller to move (MIDI learn).
+    learning: Option<Target>,
+    midi_open: bool,
+    /// The last MIDI message, for the MIDI window, and when.
+    midi_last: Option<(String, f64)>,
 }
 
 impl App {
@@ -58,6 +66,11 @@ impl App {
             shot: None,
             snap: Snapshot::default(),
             status: None,
+            midi: Midi::new(None),
+            midi_map: Map::load(),
+            learning: None,
+            midi_open: false,
+            midi_last: None,
         }
     }
 
@@ -87,7 +100,39 @@ impl App {
         self.send(Command::Seed(self.seed));
     }
 
+    /// The MIDI messages since the last frame: controllers move their targets (or are
+    /// learned); the notes already went to the player.
+    fn midi_in(&mut self, now: f64) {
+        while let Ok(m) = self.midi.rx.try_recv() {
+            let text = match m {
+                Msg::NoteOn { ch, note, vel } => {
+                    format!(
+                        "ch {} note {} {} vel {vel}",
+                        ch + 1,
+                        note,
+                        note_name(note as i32)
+                    )
+                }
+                Msg::NoteOff { ch, note } => format!("ch {} note off {}", ch + 1, note),
+                Msg::Cc { ch, cc, value } => {
+                    if let Some(t) = self.learning.take() {
+                        self.midi_map.set((ch, cc), t);
+                        if let Err(e) = self.midi_map.save() {
+                            self.status = Some(format!("MIDI map not saved: {e}"));
+                        }
+                    }
+                    if let Some(t) = self.midi_map.get((ch, cc)) {
+                        t.apply(&mut self.params, value);
+                    }
+                    format!("ch {} CC {} = {}", ch + 1, cc, value)
+                }
+            };
+            self.midi_last = Some((text, now));
+        }
+    }
+
     fn sync(&mut self, now: f64) {
+        self.midi_in(now);
         if self.params != self.sent {
             self.sent = self.params;
             self.send(Command::Params(Box::new(self.params)));
@@ -158,7 +203,91 @@ impl App {
                 CREAM_DARK,
             );
         }
+        self.midi_window(&ctx, now);
         self.screenshot(&ctx);
+    }
+
+    /// The MIDI window: the input port, the last message, and the controllers to learn.
+    fn midi_window(&mut self, ctx: &egui::Context, now: f64) {
+        if !self.midi_open {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("MIDI")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_pos(pos2(820.0, 120.0))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Input:");
+                    let current = self.midi.port.clone().unwrap_or_else(|| "none".into());
+                    let mut choice = None;
+                    egui::ComboBox::from_id_salt("midi_port")
+                        .selected_text(current)
+                        .width(220.0)
+                        .show_ui(ui, |ui| {
+                            for p in Midi::ports() {
+                                if ui
+                                    .selectable_label(self.midi.port.as_deref() == Some(&p), &p)
+                                    .clicked()
+                                {
+                                    choice = Some(Some(p));
+                                }
+                            }
+                            if ui
+                                .selectable_label(self.midi.port.is_none(), "none")
+                                .clicked()
+                            {
+                                choice = Some(None);
+                            }
+                        });
+                    match choice {
+                        Some(Some(p)) => self.midi.connect(&p),
+                        Some(None) => self.midi.disconnect(),
+                        None => {}
+                    }
+                });
+                if let Some(e) = &self.midi.error {
+                    ui.colored_label(RUST, e);
+                }
+                let last = match &self.midi_last {
+                    Some((t, at)) if now - at < 5.0 => t.clone(),
+                    _ => "—".into(),
+                };
+                ui.label(format!("Last message: {last}"));
+                ui.label(
+                    "Keys play the layer marked KEYS; channel 10 plays the percussion (drum pads).",
+                );
+                ui.separator();
+                ui.label("MIDI learn: click Learn, then move a knob or fader of your controller.");
+                egui::Grid::new("midi_learn").striped(true).show(ui, |ui| {
+                    for t in Target::ALL {
+                        ui.label(t.name());
+                        let cc = self.midi_map.of(t);
+                        ui.label(if cc.is_empty() {
+                            "—".to_string()
+                        } else {
+                            cc.join(", ")
+                        });
+                        let armed = self.learning == Some(t);
+                        if ui
+                            .selectable_label(
+                                armed,
+                                if armed { "Move a control…" } else { "Learn" },
+                            )
+                            .clicked()
+                        {
+                            self.learning = if armed { None } else { Some(t) };
+                        }
+                        ui.end_row();
+                    }
+                });
+            });
+        if !open {
+            self.midi_open = false;
+            self.learning = None;
+        }
     }
 
     fn screenshot(&mut self, ctx: &egui::Context) {
@@ -282,6 +411,10 @@ impl App {
             }
             if theme::button(ui, "EXPORT", "⤓", false) {
                 self.export();
+            }
+            let live = self.midi.port.is_some();
+            if theme::button(ui, "MIDI", "♪", live || self.midi_open) {
+                self.midi_open = !self.midi_open;
             }
         });
         let _ = now;

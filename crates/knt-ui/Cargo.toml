@@ -17,3 +17,9 @@ knt-cli = { path = "../knt-cli" }
 eframe = "0.37.0"
 # Saves the --screenshot PNG.
 image = { version = "0.25", default-features = false, features = ["png"] }
+# MIDI input.
+midir = "0.11.1"
+rtrb = "0.4.1"
+# The MIDI map.
+serde = { version = "1", features = ["derive"] }
+toml = "=0.9.12"

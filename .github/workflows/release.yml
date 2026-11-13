@@ -1,0 +1,102 @@
+# The downloads: on a tag v*, the app (Kontinuum) and the command line tool (knt) are built for
+# Windows, macOS and Linux and attached to a GitHub release of that tag.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            exe: .exe
+          - name: macos-arm64
+            os: macos-latest
+            exe: ""
+          - name: macos-x64
+            os: macos-15-intel
+            exe: ""
+          - name: linux-x64
+            os: ubuntu-22.04
+            exe: ""
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the ALSA headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --profile dist -p knt-ui -p knt-cli --locked
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="Kontinuum-${GITHUB_REF_NAME}-${{ matrix.name }}"
+          mkdir -p "dist/$name"
+          cp "target/dist/Kontinuum${{ matrix.exe }}" "target/dist/knt${{ matrix.exe }}" "dist/$name/"
+          cp README.md LICENSE "dist/$name/"
+          cp assets/logo.svg assets/icon.svg "dist/$name/"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            # an app bundle: double-click to open (unsigned: right-click > Open the first time)
+            app="dist/$name/Kontinuum.app"
+            mkdir -p "$app/Contents/MacOS"
+            mv "dist/$name/Kontinuum" "$app/Contents/MacOS/Kontinuum"
+            cat > "$app/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleName</key><string>Kontinuum</string>
+            <key>CFBundleExecutable</key><string>Kontinuum</string>
+            <key>CFBundleIdentifier</key><string>com.github.almaper.kontinuum</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${GITHUB_REF_NAME#v}</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          EOF
+            codesign --force --deep -s - "$app" || true
+          fi
+          cd dist
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a "$name.zip" "$name" > /dev/null
+          else
+            tar czf "$name.tar.gz" "$name"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    # the downloads that built, even if one platform failed
+    if: always() && startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Kontinuum $GITHUB_REF_NAME" \
+            --notes "Downloads for Windows, macOS (Apple silicon and Intel) and Linux. Unzip and run Kontinuum. The binaries are not signed: on Windows click More info > Run anyway; on macOS right-click Kontinuum.app > Open the first time."

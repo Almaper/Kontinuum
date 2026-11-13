@@ -7,6 +7,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod midi;
 mod stage;
 mod theme;
 
@@ -93,7 +94,10 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             theme::install(&cc.egui_ctx);
             let _keep = &stream;
+            let notes = player.midi_sender();
             let mut a = app::App::new(Some(player), seed);
+            a.midi = midi::Midi::new(notes);
+            a.midi.connect_first();
             a.recipe = recipe;
             if play || warmup > 0 {
                 a.set_playing(true);

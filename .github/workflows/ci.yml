@@ -1,4 +1,4 @@
-# Checks on every push and pull request: nightly rustfmt, clippy and the tests on Linux,
+# Checks on every push and pull request: rustfmt, clippy and the tests on Linux,
 # Windows and macOS.
 name: ci
 
@@ -22,13 +22,10 @@ env:
 
 jobs:
   fmt:
-    # rustfmt.toml uses unstable options, so formatting is checked with a pinned nightly.
-    # Everything else uses the stable toolchain pinned in rust-toolchain.toml.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: rustup toolchain install nightly-2026-10-18 --profile minimal --component rustfmt
-      - run: cargo +nightly-2026-10-18 fmt --all --check
+      - run: cargo fmt --all --check
 
   test:
     name: clippy and test (${{ matrix.os }})
