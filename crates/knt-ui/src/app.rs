@@ -64,6 +64,8 @@ pub struct App {
     live_since: Option<std::time::Instant>,
     /// What the texts were last written for, and the texts.
     promo: Option<(String, promo::Promo)>,
+    /// The recipe follows the time of day.
+    pub follow_clock: bool,
     /// The smoothed picture state, for the stage and the layers' windows.
     visual: stage::Visual,
 }
@@ -108,6 +110,7 @@ impl App {
             shared,
             stream_msg: None,
             chapters: promo::Chapters::default(),
+            follow_clock: false,
             live_since: None,
             promo: None,
             visual: stage::Visual::default(),
@@ -175,6 +178,14 @@ impl App {
 
     fn sync(&mut self, now: f64) {
         self.midi_in(now);
+        // the time of day chooses the recipe
+        if self.follow_clock && self.playing {
+            let (hour, _) = crate::scene::local_time();
+            let want = recipe_for_hour(hour);
+            if want != self.recipe {
+                self.choose_recipe(want);
+            }
+        }
         // the replay's chapters: the recipes the stream plays, and when
         if let Some(t) = self.live_since {
             let name = CARTA[(self.snap.recipe as usize).min(CARTA.len() - 1)].0;
@@ -1236,6 +1247,8 @@ impl App {
                 ("15 min", 15.0),
                 ("30 min", 30.0),
                 ("60 min", 60.0),
+                ("90 min", 90.0),
+                ("2 h", 120.0),
             ] {
                 if ui
                     .selectable_label(self.params.sleep_minutes == m, label)
@@ -1247,6 +1260,37 @@ impl App {
             if let Some(left) = self.snap.sleep_left {
                 ui.label(egui::RichText::new(format!("{:.0} min left", left / 60.0)).color(RUST));
             }
+        });
+        c.horizontal(|ui| {
+            ui.label(egui::RichText::new("Nature:").color(INK).strong());
+            for a in knt_engine::extras::Ambience::ALL {
+                if ui
+                    .selectable_label(self.params.ambience == a, a.name())
+                    .clicked()
+                {
+                    self.params.ambience = a;
+                }
+            }
+            ui.add(
+                egui::Slider::new(&mut self.params.ambience_level, 0.0..=1.0)
+                    .show_value(false)
+                    .text("level"),
+            );
+        });
+        c.horizontal(|ui| {
+            ui.checkbox(&mut self.params.lofi, "Lo-fi")
+                .on_hover_text("A soft beat, the crackle of a record, a darker sound");
+            ui.separator();
+            ui.label(egui::RichText::new("Binaural:").color(INK).strong())
+                .on_hover_text("A low tone in each ear, a few hertz apart. Use headphones.");
+            for (label, b) in [("off", 0.0), ("4 Hz", 4.0), ("10 Hz", 10.0), ("14 Hz", 14.0)] {
+                if ui.selectable_label(self.params.binaural == b, label).clicked() {
+                    self.params.binaural = b;
+                }
+            }
+            ui.separator();
+            ui.checkbox(&mut self.follow_clock, "Follow the clock")
+                .on_hover_text("The recipe changes with the time of day: mist at night, focus in the morning, dusk in the evening");
         });
     }
 
@@ -1381,6 +1425,19 @@ fn looks_like_youtube_key(key: &str) -> bool {
         && groups
             .iter()
             .all(|g| !g.is_empty() && g.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+/// The recipe for an hour of the day (when the music follows the clock).
+pub fn recipe_for_hour(hour: f32) -> usize {
+    match hour as u32 {
+        0..=4 => 0,   // Early Mist: sleep
+        5..=7 => 4,   // Wet Forest: the morning
+        8..=12 => 1,  // Deep Focus: work
+        13..=16 => 3, // Copper Rain: the afternoon
+        17..=19 => 6, // Dusk
+        20..=21 => 2, // Cathedral
+        _ => 5,       // Orbit: late
+    }
 }
 
 #[cfg(test)]

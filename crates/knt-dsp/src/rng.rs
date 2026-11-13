@@ -89,6 +89,12 @@ impl Rng {
     }
 }
 
+impl Default for Rng {
+    fn default() -> Self {
+        Rng::new(1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

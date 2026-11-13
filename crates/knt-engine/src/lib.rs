@@ -8,6 +8,7 @@
 //! samples: an export is the music the app plays.
 
 pub mod director;
+pub mod extras;
 pub mod layers;
 pub mod music;
 pub mod recipe;
@@ -137,6 +138,13 @@ pub struct Params {
     pub hold_harmony: bool,
     /// The sleep timer: fade to silence after this many minutes (0: off).
     pub sleep_minutes: f32,
+    /// Nature under the music, and how loud, 0..1.
+    pub ambience: extras::Ambience,
+    pub ambience_level: f32,
+    /// The lo-fi mode: a soft beat, a record's crackle, a darker sound.
+    pub lofi: bool,
+    /// Binaural tones: the beat in Hz (0: off).
+    pub binaural: f32,
 }
 
 impl Default for Params {
@@ -165,6 +173,10 @@ impl Default for Params {
             play_layer: Layer::Pad,
             hold_harmony: false,
             sleep_minutes: 0.0,
+            ambience: extras::Ambience::None,
+            ambience_level: 0.5,
+            lofi: false,
+            binaural: 0.0,
         }
     }
 }
@@ -278,6 +290,11 @@ pub struct Engine {
     pos: usize,
     frame: u64,
     sleep_elapsed: f32,
+    nature: extras::Nature,
+    lofi: extras::Lofi,
+    binaural: extras::Binaural,
+    extra: Block,
+    dark: [OnePole; 2],
 }
 
 impl Engine {
@@ -314,6 +331,11 @@ impl Engine {
             pos: BLOCK,
             frame: 0,
             sleep_elapsed: 0.0,
+            nature: extras::Nature::new(seed),
+            lofi: extras::Lofi::new(seed),
+            binaural: extras::Binaural::default(),
+            extra: extras::silence(),
+            dark: [OnePole::default(); 2],
         }
     }
 
@@ -503,6 +525,15 @@ impl Engine {
         for (g, s) in gains.iter_mut().zip(&mut self.gains) {
             *g = s.step(BLOCK);
         }
+        // beside the music: nature, the lo-fi beat, binaural tones
+        self.extra = extras::silence();
+        self.nature
+            .render(&mut self.extra, p.ambience, p.ambience_level);
+        if p.lofi {
+            self.lofi.render(&mut self.extra, r.bpm, 1.0);
+        }
+        self.binaural.render(&mut self.extra, p.binaural, 1.0);
+        let dark_c = knt_dsp::coef(1.0 / (std::f32::consts::TAU * 4200.0));
         for k in 0..BLOCK {
             let mut dry = [0.0f32; 2];
             let mut rv = [0.0f32; 2];
@@ -532,6 +563,12 @@ impl Engine {
             self.level_gain += (target - self.level_gain) * 0.000_005;
             l *= self.level_gain;
             r *= self.level_gain;
+            if p.lofi {
+                l = self.dark[0].lp(l, dark_c);
+                r = self.dark[1].lp(r, dark_c);
+            }
+            l += self.extra[k][0];
+            r += self.extra[k][1];
             // the tape: a soft saturation, then the volume and the fade
             l = soft_clip(l * warmth) / warmth.sqrt();
             r = soft_clip(r * warmth) / warmth.sqrt();
@@ -595,7 +632,7 @@ impl Engine {
                 self.drone.patch.name(),
                 self.pad.patch.name(),
                 "air and drops",
-                "FM bells",
+                self.bells.patch.name(),
                 "hand percussion",
                 "formant choir",
                 self.modular.patch.name(),

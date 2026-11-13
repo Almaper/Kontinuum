@@ -526,6 +526,9 @@ pub enum ModularPatch {
     /// West-coast "bongos": sparse plucks through a low-pass gate (amplitude and brightness
     /// decaying together).
     Bongo,
+    /// A nylon guitar: plucked strings (Karplus-Strong), single notes and slow strums of the
+    /// chord.
+    Guitar,
 }
 
 impl ModularPatch {
@@ -533,6 +536,7 @@ impl ModularPatch {
         match self {
             ModularPatch::Sequence => "Berlin sequence",
             ModularPatch::Bongo => "low-pass gate plucks",
+            ModularPatch::Guitar => "nylon guitar",
         }
     }
 }
@@ -564,6 +568,17 @@ pub struct Modular {
     notes: [i32; 6],
     len: usize,
     pub played: u32,
+    /// The guitar's strings: a delay line each, where it is, how long, and its damping.
+    strings: Box<[[f32; 2048]; 6]>,
+    string_pos: [usize; 6],
+    string_len: [usize; 6],
+    string_amp: [f32; 6],
+    string_pan: [f32; 6],
+    next_string: usize,
+    /// A strum in progress: the notes still to pluck and the wait between them.
+    strum: [i32; 6],
+    strum_left: usize,
+    strum_wait: f32,
 }
 
 impl Modular {
@@ -580,6 +595,15 @@ impl Modular {
             notes: [0; 6],
             len: 0,
             played: 0,
+            strings: Box::new([[0.0; 2048]; 6]),
+            string_pos: [0; 6],
+            string_len: [100; 6],
+            string_amp: [0.0; 6],
+            string_pan: [0.0; 6],
+            next_string: 0,
+            strum: [0; 6],
+            strum_left: 0,
+            strum_wait: 0.0,
         };
         m.new_pattern();
         m
@@ -607,11 +631,39 @@ impl Modular {
         self.notes[..self.len].copy_from_slice(&notes[..self.len]);
     }
 
+    /// A guitar string: its line filled with soft noise, as long as the note's period.
+    fn pluck_string(&mut self, note: i32, vel: f32) {
+        let mut n = note;
+        while n < 40 {
+            n += 12;
+        }
+        let i = self.next_string;
+        self.next_string = (i + 1) % 6;
+        let len = ((RATE / note_hz(n as f32)) as usize).clamp(8, 2047);
+        let mut lp = 0.0;
+        for k in 0..len {
+            // the noise softened: a nylon string plucked with a finger
+            lp += (self.rng.bipolar() - lp) * 0.45;
+            self.strings[i][k] = lp * vel;
+        }
+        self.string_len[i] = len;
+        self.string_pos[i] = 0;
+        self.string_amp[i] = 1.0;
+        self.string_pan[i] = self.rng.bipolar() * 0.5;
+        self.played += 1;
+    }
+
     fn pluck(&mut self, note: i32, vel: f32) {
+        if self.patch == ModularPatch::Guitar {
+            self.pluck_string(note, vel);
+            return;
+        }
         let i = quietest(self.voices.iter().map(|v| v.gate));
         let (decay, fm) = match self.patch {
             ModularPatch::Sequence => (self.rng.range(0.15, 0.35), 0.0),
-            ModularPatch::Bongo => (self.rng.range(0.25, 0.9), self.rng.range(0.5, 2.5)),
+            ModularPatch::Bongo | ModularPatch::Guitar => {
+                (self.rng.range(0.25, 0.9), self.rng.range(0.5, 2.5))
+            }
         };
         self.voices[i] = Pluck {
             osc: Osc::new(
@@ -671,6 +723,22 @@ impl Modular {
                             };
                         }
                     }
+                    ModularPatch::Guitar => {
+                        self.wait = self.rng.range(1.2, 4.0) * (1.2 - motion * 0.5);
+                        if self.rng.chance(0.35) && self.len >= 2 {
+                            // a slow strum, low to high
+                            let mut notes = self.notes;
+                            notes[..self.len].sort_unstable();
+                            self.strum = notes;
+                            self.strum_left = self.len.min(5);
+                            self.strum_wait = 0.0;
+                        } else {
+                            let n = self.notes[self.rng.below(self.len)]
+                                + 12 * self.rng.below(2) as i32;
+                            let vel = self.rng.range(0.5, 1.0);
+                            self.pluck(n, vel);
+                        }
+                    }
                     ModularPatch::Bongo => {
                         self.wait = self.rng.range(0.4, 2.5) * (1.2 - motion * 0.6);
                         let n =
@@ -679,6 +747,17 @@ impl Modular {
                         self.pluck(n, vel);
                     }
                 }
+            }
+        }
+        // the strum: one note every 60 ms
+        if self.strum_left > 0 {
+            self.strum_wait -= dt;
+            if self.strum_wait <= 0.0 {
+                let k = self.len.min(5) - self.strum_left;
+                let n = self.strum[k];
+                self.pluck(n, 0.7);
+                self.strum_left -= 1;
+                self.strum_wait = 0.06;
             }
         }
         let sweep = 0.5 + 0.5 * self.sweep.step(0.02 + 0.03 * motion, BLOCK);
@@ -716,6 +795,29 @@ impl Modular {
                 o[0] = self.ladder[0].process(o[0]);
                 o[1] = self.ladder[1].process(o[1]);
             }
+        }
+        // the guitar's strings: each sample, the average of two neighbours, a little damped
+        for i in 0..6 {
+            if self.string_amp[i] < 1e-4 {
+                continue;
+            }
+            let len = self.string_len[i];
+            let (gl, gr) = pan(self.string_pan[i]);
+            let line = &mut self.strings[i];
+            let mut pos = self.string_pos[i];
+            let mut energy = 0.0f32;
+            for o in out.iter_mut() {
+                let next = (pos + 1) % len;
+                let y = line[pos];
+                line[pos] = (y + line[next]) * 0.4985;
+                pos = next;
+                energy = energy.max(y.abs());
+                let y = y * 0.35;
+                o[0] += y * gl;
+                o[1] += y * gr;
+            }
+            self.string_pos[i] = pos;
+            self.string_amp[i] = energy;
         }
     }
 }
@@ -830,9 +932,42 @@ struct Bell {
     pan: f32,
 }
 
+/// What the bells layer plays; the director picks one per section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BellsPatch {
+    /// Two-operator FM bells.
+    #[default]
+    Fm,
+    /// A soft felt piano: a few slightly stretched partials, the high ones dying first.
+    Piano,
+}
+
+impl BellsPatch {
+    pub fn name(self) -> &'static str {
+        match self {
+            BellsPatch::Fm => "FM bells",
+            BellsPatch::Piano => "felt piano",
+        }
+    }
+}
+
+/// A piano note: five partials, each with its phase, level and decay.
+#[derive(Debug, Clone, Copy, Default)]
+struct Key {
+    phase: [f32; 5],
+    hz: [f32; 5],
+    amp: [f32; 5],
+    decay: [f32; 5],
+    attack: f32,
+    pan: f32,
+}
+
 /// Distant bells: two-operator FM with an inharmonic ratio, the brightness fading with the
-/// sound.
+/// sound; or a felt piano.
 pub struct Bells {
+    pub patch: BellsPatch,
+    keys: [Key; 10],
+    next_key: usize,
     voices: [Bell; 10],
     pub played: u32,
     /// The last notes struck and when (frames), for the stage.
@@ -843,6 +978,9 @@ pub struct Bells {
 impl Bells {
     pub fn new() -> Self {
         Bells {
+            patch: BellsPatch::Fm,
+            keys: [Key::default(); 10],
+            next_key: 0,
             voices: [Bell::default(); 10],
             played: 0,
             recent: [(0, 0); 8],
@@ -851,6 +989,29 @@ impl Bells {
     }
 
     pub fn strike(&mut self, note: i32, vel: f32, rng: &mut Rng, now: u64) {
+        if self.patch == BellsPatch::Piano {
+            // the piano a little lower than the bells: in the middle of the keyboard
+            let n = if note > 76 { note - 12 } else { note };
+            let f = note_hz(n as f32);
+            let mut k = Key {
+                attack: 0.0,
+                pan: rng.bipolar() * 0.5,
+                ..Key::default()
+            };
+            for p in 0..5 {
+                let m = (p + 1) as f32;
+                k.hz[p] = f * m * (1.0 + 0.0004 * m * m).sqrt();
+                k.amp[p] = vel.clamp(0.0, 1.0) * 0.1 / m.powf(1.6);
+                k.decay[p] = 1.0 - coef((3.5 / m.powf(0.8)).max(0.4));
+            }
+            let i = self.next_key;
+            self.next_key = (i + 1) % self.keys.len();
+            self.keys[i] = k;
+            self.played += 1;
+            self.recent[self.next] = (note, now);
+            self.next = (self.next + 1) % self.recent.len();
+            return;
+        }
         let i = quietest(self.voices.iter().map(|v| v.amp));
         let ratio = [3.5, 2.0, 1.41, 2.76][rng.below(4)];
         self.voices[i] = Bell {
@@ -871,6 +1032,25 @@ impl Bells {
 
     pub fn render(&mut self, out: &mut Block) {
         *out = [[0.0; 2]; BLOCK];
+        let attack = coef(0.006);
+        for k in &mut self.keys {
+            if k.amp[0] < 1e-5 {
+                continue;
+            }
+            let (gl, gr) = pan(k.pan);
+            for o in out.iter_mut() {
+                k.attack += (1.0 - k.attack) * attack;
+                let mut y = 0.0;
+                for p in 0..5 {
+                    k.phase[p] = (k.phase[p] + k.hz[p] / RATE).fract();
+                    y += (k.phase[p] * std::f32::consts::TAU).sin() * k.amp[p];
+                    k.amp[p] *= k.decay[p];
+                }
+                let y = y * k.attack;
+                o[0] += y * gl;
+                o[1] += y * gr;
+            }
+        }
         for v in &mut self.voices {
             if v.amp < 1e-5 {
                 continue;

@@ -36,6 +36,15 @@ enum Cmd {
         /// The fade out at the end, seconds.
         #[arg(long, default_value_t = 12.0)]
         fade: f32,
+        /// Nature under the music: rain, forest, fire or sea.
+        #[arg(long)]
+        ambience: Option<String>,
+        /// The lo-fi mode: a soft beat and a record's crackle.
+        #[arg(long)]
+        lofi: bool,
+        /// Binaural tones: the beat in Hz (e.g. 10).
+        #[arg(long, default_value_t = 0.0)]
+        binaural: f32,
     },
     /// Play through the default audio device until Ctrl+C.
     Play {
@@ -71,8 +80,22 @@ fn run() -> Result<(), String> {
             seed,
             minutes,
             fade,
+            ambience,
+            lofi,
+            binaural,
         } => {
             let r = recipe(&r)?;
+            let mut params = Params {
+                lofi,
+                binaural,
+                ..Params::default()
+            };
+            if let Some(a) = ambience {
+                params.ambience = knt_engine::extras::Ambience::ALL
+                    .into_iter()
+                    .find(|x| x.name() == a.to_lowercase())
+                    .ok_or_else(|| format!("no ambience {a:?}: rain, forest, fire or sea"))?;
+            }
             if minutes.is_nan() || minutes <= 0.0 {
                 return Err("--minutes must be positive".into());
             }
@@ -81,7 +104,7 @@ fn run() -> Result<(), String> {
                 knt_engine::recipe::name(r.id).unwrap_or("?"),
                 output.display()
             );
-            knt_cli::export(&output, seed, r, Params::default(), minutes, fade)
+            knt_cli::export(&output, seed, r, params, minutes, fade)
         }
         Cmd::Play { recipe: r, seed } => {
             let r = recipe(&r)?;

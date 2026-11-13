@@ -10,7 +10,7 @@
 use knt_dsp::Rng;
 
 use crate::layers::{
-    Bells, Choir, Drone, DronePatch, Hit, Modular, ModularPatch, Pad, PadPatch, Perc,
+    Bells, BellsPatch, Choir, Drone, DronePatch, Hit, Modular, ModularPatch, Pad, PadPatch, Perc,
 };
 use crate::music::{Chord, Scale, chord_from_played};
 use crate::recipe::{CARTA, Recipe};
@@ -81,6 +81,8 @@ pub struct Director {
     pub chord: Chord,
     pub section: u32,
     chords_left: u32,
+    /// What the bells layer plays this section.
+    pub bells_patch: BellsPatch,
     /// Seconds until the next chord, and the chord's length.
     pub chord_left: f32,
     pub chord_len: f32,
@@ -121,6 +123,7 @@ impl Director {
             chord: Chord::default(),
             section: 0,
             chords_left: 0,
+            bells_patch: BellsPatch::Fm,
             chord_left: 0.0,
             chord_len: 1.0,
             pulse: false,
@@ -229,6 +232,7 @@ impl Director {
     ) {
         let dt = BLOCK as f32 / knt_dsp::RATE;
         self.time += dt as f64;
+        bells.patch = self.bells_patch;
         let any_held = self.held.iter().any(|&h| h);
         if any_held {
             self.idle = 0.0;
@@ -505,12 +509,21 @@ impl Director {
             pad.set_patch(p);
         }
         if on[Layer::Modular.index()] {
-            let p = if self.rng.chance(0.5) {
-                ModularPatch::Sequence
-            } else {
-                ModularPatch::Bongo
-            };
+            let p = [
+                ModularPatch::Sequence,
+                ModularPatch::Bongo,
+                ModularPatch::Guitar,
+            ][self.rng.weighted(&[2.0, 2.0, 1.6])];
             modular.set_patch(p);
+        }
+        if on[Layer::Bells.index()] {
+            // the piano more often in the calm recipes (sleep, focus, dusk)
+            let calm = matches!(r.id, 0 | 1 | 6);
+            self.bells_patch = if self.rng.chance(if calm { 0.6 } else { 0.35 }) {
+                BellsPatch::Piano
+            } else {
+                BellsPatch::Fm
+            };
         }
         // the percussion and the choir follow their own sections
         on[Layer::Perc.index()] = true;
@@ -521,6 +534,7 @@ impl Director {
                 Layer::Drone => drone.patch.name(),
                 Layer::Pad => pad.patch.name(),
                 Layer::Modular => modular.patch.name(),
+                Layer::Bells => self.bells_patch.name(),
                 _ => "",
             };
             if on[i] && (!self.active[i] || !timbre.is_empty()) {
