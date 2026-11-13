@@ -333,7 +333,10 @@ pub fn draw(cv: &mut dyn Canvas, s: &Snapshot, vis: &Visual, live: Option<&str>,
                 }
                 // Orbit: a ringed planet and two moons
                 5 => {
-                    let q = pos2(w * if portrait { 0.75 } else { 0.8 }, h * 0.22);
+                    let q = pos2(
+                        w * if portrait { 0.78 } else { 0.8 },
+                        h * if portrait { 0.1 } else { 0.22 },
+                    );
                     let r = h.min(w) * 0.09;
                     let body = lerp(bg, col(1), 0.45);
                     let ring_pts = |front: bool| -> Vec<Pos2> {
@@ -1379,5 +1382,42 @@ pub fn draw(cv: &mut dyn Canvas, s: &Snapshot, vis: &Visual, live: Option<&str>,
             20.0 * u,
             cream.gamma_multiply(0.8),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Draws an upright (9:16) and a wide frame; KNT_FRAMES=dir keeps them as PNGs.
+    #[test]
+    fn draws_upright_and_wide() {
+        let s = knt_engine::Snapshot {
+            recipe: 5,
+            playing: true,
+            fade: 1.0,
+            section: 2,
+            levels: [0.3; knt_engine::LAYERS],
+            gains: [1.0; knt_engine::LAYERS],
+            active: [true; knt_engine::LAYERS],
+            chord: knt_engine::Chord::from_notes(&[50, 57, 62, 66], 0),
+            ..Default::default()
+        };
+        for (w, h) in [(720u32, 1280u32), (1280, 720)] {
+            let mut c = crate::canvas::SkiaCanvas::new(w, h);
+            let mut vis = super::Visual::default();
+            for k in 0..40 {
+                vis.update(&s, k as f64 * 0.1);
+                super::draw(
+                    &mut c,
+                    &s,
+                    &vis,
+                    Some("LIVE"),
+                    &crate::scene::Overlay::default(),
+                );
+            }
+            if let Ok(dir) = std::env::var("KNT_FRAMES") {
+                let p = std::path::Path::new(&dir).join(format!("frame-{w}x{h}.png"));
+                image::save_buffer(p, c.rgba(), w, h, image::ColorType::Rgba8).unwrap();
+            }
+        }
     }
 }
