@@ -11,6 +11,7 @@ use eframe::egui::{
 use knt_engine::{AUTOS, CARTA, Command, Event, Layer, Mode, Params, Recipe, Snapshot, note_name};
 use knt_player::Player;
 
+use crate::i18n::t as tr;
 use crate::midi::{Map, Midi, Msg, Target};
 use crate::promo;
 use crate::stage;
@@ -79,6 +80,17 @@ pub struct App {
     brain: crate::chat::Brain,
     chat_status: String,
     chat_try: String,
+    /// The window's own settings (language, my recipes), and the My recipes window.
+    ui_cfg: UiConfig,
+    mine_open: bool,
+    mine_name: String,
+    /// A newer version on GitHub: (version, page).
+    update: std::sync::Arc<std::sync::Mutex<Option<(String, String)>>>,
+    /// The EXPORT window: open, how long, which format; the recording of what plays.
+    export_open: bool,
+    export_minutes: f32,
+    export_format: &'static str,
+    recorder: Option<crate::record::Recorder>,
     /// What the cutting of long videos says.
     cut_status: std::sync::Arc<std::sync::Mutex<String>>,
     /// The smoothed picture state, for the stage and the layers' windows.
@@ -99,7 +111,7 @@ impl App {
         let tap = player.as_mut().and_then(|p| p.tap());
         let tap_flag = player.as_ref().map(|p| p.tap_flag());
         let shared = player.as_ref().map(|p| p.shared_snapshot());
-        App {
+        let app = App {
             player,
             params: Params::default(),
             sent: Params::default(),
@@ -131,6 +143,14 @@ impl App {
             scheduled: false,
             schedule_held: false,
             cut_status: Default::default(),
+            ui_cfg: crate::scene::load("ui.toml"),
+            mine_open: false,
+            mine_name: String::new(),
+            update: Default::default(),
+            export_open: false,
+            export_minutes: 10.0,
+            export_format: "ogg",
+            recorder: None,
             chat_cfg: crate::scene::load("chat.toml"),
             chat: None,
             brain: crate::chat::Brain::default(),
@@ -139,7 +159,12 @@ impl App {
             live_since: None,
             promo: None,
             visual: stage::Visual::default(),
+        };
+        crate::i18n::set_spanish(app.ui_cfg.spanish);
+        if !cfg!(test) && std::env::var_os("KNT_NO_UPDATE_CHECK").is_none() {
+            check_update(app.update.clone());
         }
+        app
     }
 
     fn send(&mut self, c: Command) {
@@ -316,6 +341,8 @@ impl App {
         }
         self.midi_window(&ctx, now);
         self.stream_window(&ctx);
+        self.export_window(&ctx);
+        self.mine_window(&ctx);
         self.screenshot(&ctx);
     }
 
@@ -474,51 +501,51 @@ impl App {
 
     /// The YouTube chat in the LIVE window.
     fn chat_ui(&mut self, ui: &mut Ui) {
-        egui::CollapsingHeader::new("Chat (YouTube)").default_open(false).show(ui, |ui| {
+        egui::CollapsingHeader::new(tr("Chat (YouTube)")).default_open(false).show(ui, |ui| {
             let connected = self.chat.is_some();
             let c = &mut self.chat_cfg;
             ui.add_enabled_ui(!connected, |ui| {
                 egui::Grid::new("chat_cfg").num_columns(2).show(ui, |ui| {
-                    ui.label("API key:");
+                    ui.label(tr("API key:"));
                     ui.add(egui::TextEdit::singleline(&mut c.api_key).password(true).desired_width(260.0))
                         .on_hover_text(
                             "console.cloud.google.com > a new project > APIs & Services > Library > \
                              YouTube Data API v3 > Enable; then Credentials > Create credentials > API key",
                         );
                     ui.end_row();
-                    ui.label("Live video:");
+                    ui.label(tr("Live video:"));
                     ui.add(
                         egui::TextEdit::singleline(&mut c.video)
-                            .hint_text("the link of the live video")
+                            .hint_text(tr("the link of the live video"))
                             .desired_width(260.0),
                     );
                     ui.end_row();
                 });
             });
             ui.horizontal(|ui| {
-                ui.checkbox(&mut c.votes, "Votes (!orbit, !1)");
-                ui.label("poll every");
+                ui.checkbox(&mut c.votes, tr("Votes (!orbit, !1)"));
+                ui.label(tr("poll every"));
                 ui.add(egui::DragValue::new(&mut c.poll_minutes).range(0..=120).suffix(" min"));
             });
             ui.horizontal(|ui| {
-                ui.checkbox(&mut c.sounds, "Sounds (!nature rain, !lofi)");
-                ui.checkbox(&mut c.greet, "Welcome newcomers");
+                ui.checkbox(&mut c.sounds, tr("Sounds (!nature rain, !lofi)"));
+                ui.checkbox(&mut c.greet, tr("Welcome newcomers"));
             });
             ui.horizontal(|ui| {
-                ui.label("Blocked words:");
+                ui.label(tr("Blocked words:"));
                 ui.add(
                     egui::TextEdit::singleline(&mut c.blocked_words)
-                        .hint_text("more, comma-separated (insults are built in)")
+                        .hint_text(tr("more, comma-separated (insults are built in)"))
                         .desired_width(240.0),
                 );
             });
             ui.horizontal(|ui| {
-                ui.label("Ignored names:");
+                ui.label(tr("Ignored names:"));
                 ui.add(egui::TextEdit::singleline(&mut c.blocked_names).desired_width(240.0));
             });
             ui.horizontal(|ui| {
                 if !connected {
-                    if ui.button("Connect to the chat").clicked() {
+                    if ui.button(tr("Connect to the chat")).clicked() {
                         let _ = crate::scene::save("chat.toml", &self.chat_cfg);
                         match crate::chat::Reader::start(&self.chat_cfg) {
                             Ok(r) => {
@@ -529,7 +556,7 @@ impl App {
                             Err(e) => self.chat_status = e,
                         }
                     }
-                } else if ui.button("Disconnect").clicked() {
+                } else if ui.button(tr("Disconnect")).clicked() {
                     self.chat = None;
                     self.chat_status = "Disconnected.".into();
                     crate::scene::with_overlay(|o| o.viewers = None);
@@ -537,13 +564,13 @@ impl App {
                 ui.label(egui::RichText::new(&self.chat_status).small());
             });
             ui.horizontal(|ui| {
-                ui.label("Try:");
+                ui.label(tr("Try:"));
                 ui.add(
                     egui::TextEdit::singleline(&mut self.chat_try)
                         .hint_text("Name: !orbit")
                         .desired_width(200.0),
                 );
-                if ui.button("Send").clicked() && !self.chat_try.trim().is_empty() {
+                if ui.button(tr("Send")).clicked() && !self.chat_try.trim().is_empty() {
                     let (name, text) = self
                         .chat_try
                         .split_once(':')
@@ -773,7 +800,7 @@ impl App {
         let mut open = true;
         let mut go = false;
         let mut stop = false;
-        egui::Window::new("Go live")
+        egui::Window::new(tr("Go live"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -782,17 +809,19 @@ impl App {
                 let running = self.stream.is_some();
                 ui.add_enabled_ui(!running, |ui| {
                     let c = &mut self.stream_cfg;
-                    ui.label("Stream the stage and the music to YouTube, without OBS.");
+                    ui.label(tr(
+                        "Stream the stage and the music to YouTube, without OBS.",
+                    ));
                     egui::Grid::new("stream_cfg").num_columns(2).show(ui, |ui| {
-                        ui.label("Stream key:");
+                        ui.label(tr("Stream key:"));
                         ui.add(
                             egui::TextEdit::singleline(&mut c.key)
                                 .password(true)
                                 .desired_width(260.0),
                         )
-                        .on_hover_text("YouTube Studio > Go live > Stream > Stream key");
+                        .on_hover_text(tr("YouTube Studio > Go live > Stream > Stream key"));
                         ui.end_row();
-                        ui.label("Server:");
+                        ui.label(tr("Server:"));
                         ui.add(egui::TextEdit::singleline(&mut c.url).desired_width(260.0));
                         ui.end_row();
                         ui.label("");
@@ -805,24 +834,24 @@ impl App {
                             ui.selectable_value(
                                 &mut c.url,
                                 rtmps.to_string(),
-                                "YouTube secure (RTMPS)",
+                                tr("YouTube secure (RTMPS)"),
                             )
-                            .on_hover_text(
+                            .on_hover_text(tr(
                                 "Try it when a firewall or the network blocks the normal one",
-                            );
+                            ));
                         });
                         ui.end_row();
-                        ui.label("Quality:");
+                        ui.label(tr("Quality:"));
                         ui.horizontal(|ui| {
                             ui.selectable_value(&mut c.height, 720, "720p");
                             ui.selectable_value(&mut c.height, 1080, "1080p");
                             ui.label("30 fps");
                         });
                         ui.end_row();
-                        ui.label("Record instead:");
+                        ui.label(tr("Record instead:"));
                         let mut rec = c.record.is_some();
                         if ui
-                            .checkbox(&mut rec, "to a file (to test, or to keep)")
+                            .checkbox(&mut rec, tr("to a file (to test, or to keep)"))
                             .changed()
                         {
                             c.record = rec.then(|| {
@@ -851,7 +880,7 @@ impl App {
                 match &self.stream {
                     None => {
                         if ui
-                            .button(egui::RichText::new("● Go live").strong().color(RUST))
+                            .button(egui::RichText::new(tr("● Go live")).strong().color(RUST))
                             .clicked()
                         {
                             go = true;
@@ -894,7 +923,7 @@ impl App {
                                  the secure server.",
                             );
                         }
-                        if ui.button("■ Stop").clicked() {
+                        if ui.button(tr("■ Stop")).clicked() {
                             stop = true;
                         }
                     }
@@ -931,7 +960,7 @@ impl App {
     /// More of the LIVE window: other platforms, a copy, the schedule, the focus timer, tools.
     fn more_ui(&mut self, ui: &mut Ui) {
         let running = self.stream.is_some();
-        egui::CollapsingHeader::new("Also stream to")
+        egui::CollapsingHeader::new(tr("Also stream to"))
             .default_open(false)
             .show(ui, |ui| {
                 ui.add_enabled_ui(!running, |ui| {
@@ -942,13 +971,13 @@ impl App {
                             ui.add(
                                 egui::TextEdit::singleline(&mut d.key)
                                     .password(true)
-                                    .hint_text("stream key")
+                                    .hint_text(tr("stream key"))
                                     .desired_width(140.0),
                             );
                             ui.end_row();
                         }
                     });
-                    if ui.small_button("+ another").clicked() {
+                    if ui.small_button(tr("+ another")).clicked() {
                         self.stream_cfg.extra.push(crate::stream::Destination {
                             name: "Other".into(),
                             url: "rtmp://".into(),
@@ -961,14 +990,14 @@ impl App {
                     );
                 });
             });
-        egui::CollapsingHeader::new("Schedule")
+        egui::CollapsingHeader::new(tr("Schedule"))
             .default_open(false)
             .show(ui, |ui| {
                 let sch = &mut self.stream_cfg.schedule;
                 ui.horizontal(|ui| {
-                    ui.checkbox(&mut sch.on, "Go live every day from");
+                    ui.checkbox(&mut sch.on, tr("Go live every day from"));
                     ui.add(egui::TextEdit::singleline(&mut sch.start).desired_width(48.0));
-                    ui.label("to");
+                    ui.label(tr("to"));
                     ui.add(egui::TextEdit::singleline(&mut sch.stop).desired_width(48.0));
                 });
                 let ok = crate::stream::parse_hm(&sch.start).is_some()
@@ -982,29 +1011,31 @@ impl App {
                     .small(),
                 );
             });
-        egui::CollapsingHeader::new("Focus timer")
+        egui::CollapsingHeader::new(tr("Focus timer"))
             .default_open(false)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     if self.focus.is_none() {
-                        if ui.button("Start 25 / 5").clicked() {
+                        if ui.button(tr("Start 25 / 5")).clicked() {
                             self.focus = Some((std::time::Instant::now(), true, 1));
                         }
-                    } else if ui.button("Stop the timer").clicked() {
+                    } else if ui.button(tr("Stop the timer")).clicked() {
                         self.focus = None;
                     }
                     ui.label(
-                        egui::RichText::new("On the stage: 25 minutes of focus, 5 of break.")
+                        egui::RichText::new(tr("On the stage: 25 minutes of focus, 5 of break."))
                             .small(),
                     );
                 });
             });
-        egui::CollapsingHeader::new("Tools")
+        egui::CollapsingHeader::new(tr("Tools"))
             .default_open(false)
             .show(ui, |ui| {
                 if ui
-                    .button("Make a thumbnail")
-                    .on_hover_text("A 1280×720 image of the stage now, with big words, for YouTube")
+                    .button(tr("Make a thumbnail"))
+                    .on_hover_text(tr(
+                        "A 1280×720 image of the stage now, with big words, for YouTube",
+                    ))
                     .clicked()
                 {
                     let ov = crate::scene::overlay_now();
@@ -1018,17 +1049,17 @@ impl App {
                 }
                 ui.add_enabled_ui(!running, |ui| {
                     if ui
-                        .button("Record a 60 s Short (9:16)")
-                        .on_hover_text(
+                        .button(tr("Record a 60 s Short (9:16)"))
+                        .on_hover_text(tr(
                             "An upright video of the stage, for YouTube Shorts or TikTok",
-                        )
+                        ))
                         .clicked()
                     {
                         self.record_short();
                     }
                 });
                 if ui
-                    .button("Cut the last recording into 1 h, 3 h and 8 h videos")
+                    .button(tr("Cut the last recording into 1 h, 3 h and 8 h videos"))
                     .clicked()
                 {
                     self.cut_long_videos();
@@ -1041,7 +1072,7 @@ impl App {
                 if !cs.is_empty() {
                     ui.label(egui::RichText::new(cs).small());
                 }
-                if ui.button("Open the recordings folder").clicked() {
+                if ui.button(tr("Open the recordings folder")).clicked() {
                     let dir = crate::stream::recordings_dir();
                     let _ = std::fs::create_dir_all(&dir);
                     open_folder(&dir);
@@ -1051,28 +1082,30 @@ impl App {
 
     /// What the stage shows (for the window and the stream), saved.
     fn stage_options_ui(&mut self, ui: &mut Ui) {
-        egui::CollapsingHeader::new("Stage")
+        egui::CollapsingHeader::new(tr("Stage"))
             .default_open(false)
             .show(ui, |ui| {
                 let mut o = crate::scene::overlay_now().opts;
                 let before = o;
                 egui::Grid::new("stage_opts").num_columns(3).show(ui, |ui| {
-                    ui.checkbox(&mut o.day_night, "Day and night")
-                        .on_hover_text("The sky follows your clock: dawn, day, dusk, night");
-                    ui.checkbox(&mut o.lake, "Lake");
-                    ui.checkbox(&mut o.camera, "Moving camera");
+                    ui.checkbox(&mut o.day_night, tr("Day and night"))
+                        .on_hover_text(tr("The sky follows your clock: dawn, day, dusk, night"));
+                    ui.checkbox(&mut o.lake, tr("Lake"));
+                    ui.checkbox(&mut o.camera, tr("Moving camera"));
                     ui.end_row();
-                    ui.checkbox(&mut o.scenery, "Scenery")
-                        .on_hover_text("Each recipe's landscape: fog, a forest, a planet, arches…");
-                    ui.checkbox(&mut o.weather, "Weather");
-                    ui.checkbox(&mut o.seasons, "Seasons");
+                    ui.checkbox(&mut o.scenery, tr("Scenery")).on_hover_text(tr(
+                        "Each recipe's landscape: fog, a forest, a planet, arches…",
+                    ));
+                    ui.checkbox(&mut o.weather, tr("Weather"));
+                    ui.checkbox(&mut o.seasons, tr("Seasons"));
                     ui.end_row();
-                    ui.checkbox(&mut o.window, "Cozy window").on_hover_text(
-                        "The stage seen through a rainy window, with a cup and a candle",
-                    );
-                    ui.checkbox(&mut o.mascot, "Lumo")
-                        .on_hover_text("The little lantern spirit on the hill");
-                    ui.checkbox(&mut o.constellation, "Seed constellation");
+                    ui.checkbox(&mut o.window, tr("Cozy window"))
+                        .on_hover_text(tr(
+                            "The stage seen through a rainy window, with a cup and a candle",
+                        ));
+                    ui.checkbox(&mut o.mascot, tr("Lumo"))
+                        .on_hover_text(tr("The little lantern spirit on the hill"));
+                    ui.checkbox(&mut o.constellation, tr("Seed constellation"));
                     ui.end_row();
                 });
                 if o != before {
@@ -1084,7 +1117,7 @@ impl App {
                 ui.add_enabled_ui(self.stream.is_none(), |ui| {
                     ui.checkbox(
                         &mut self.stream_cfg.vertical,
-                        "Vertical video (9:16, for Shorts)",
+                        tr("Vertical video (9:16, for Shorts)"),
                     );
                 });
             });
@@ -1093,21 +1126,21 @@ impl App {
     /// The texts for YouTube: the title, the description, the pinned comment and the tags, each
     /// with a Copy button, in the language chosen.
     fn texts_ui(&mut self, ui: &mut Ui) {
-        egui::CollapsingHeader::new("Texts for YouTube")
+        egui::CollapsingHeader::new(tr("Texts for YouTube"))
             .default_open(true)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Language:");
+                    ui.label(tr("Language:"));
                     let l = &mut self.stream_cfg.lang;
                     ui.selectable_value(l, promo::Lang::English, "English");
                     ui.selectable_value(l, promo::Lang::Spanish, "Español");
-                    ui.selectable_value(l, promo::Lang::Both, "Both");
+                    ui.selectable_value(l, promo::Lang::Both, tr("Both"));
                 });
                 let p = self.texts();
                 let field = |ui: &mut Ui, name: &str, text: &str, rows: usize| {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(name).strong());
-                        if ui.small_button("Copy").clicked() {
+                        if ui.small_button(tr("Copy")).clicked() {
                             ui.ctx().copy_text(text.to_string());
                         }
                     });
@@ -1124,11 +1157,11 @@ impl App {
                             );
                         });
                 };
-                field(ui, "Title", &p.title, 1);
-                field(ui, "Description", &p.description, 6);
-                field(ui, "Pinned comment", &p.pinned, 2);
-                field(ui, "Hashtags", &p.hashtags.join(" "), 1);
-                field(ui, "Tags", &p.tags, 2);
+                field(ui, tr("Title"), &p.title, 1);
+                field(ui, tr("Description"), &p.description, 6);
+                field(ui, tr("Pinned comment"), &p.pinned, 2);
+                field(ui, tr("Hashtags"), &p.hashtags.join(" "), 1);
+                field(ui, tr("Tags"), &p.tags, 2);
                 ui.label(
                     egui::RichText::new(
                         "Paste them in YouTube Studio when you set up the stream. They follow what \
@@ -1146,14 +1179,14 @@ impl App {
             return;
         }
         let mut open = true;
-        egui::Window::new("MIDI")
+        egui::Window::new(tr("MIDI"))
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
             .default_pos(pos2(820.0, 120.0))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Input:");
+                    ui.label(tr("Input:"));
                     let current = self.midi.port.clone().unwrap_or_else(|| "none".into());
                     let mut choice = None;
                     egui::ComboBox::from_id_salt("midi_port")
@@ -1169,7 +1202,7 @@ impl App {
                                 }
                             }
                             if ui
-                                .selectable_label(self.midi.port.is_none(), "none")
+                                .selectable_label(self.midi.port.is_none(), tr("none"))
                                 .clicked()
                             {
                                 choice = Some(None);
@@ -1189,11 +1222,13 @@ impl App {
                     _ => "—".into(),
                 };
                 ui.label(format!("Last message: {last}"));
-                ui.label(
+                ui.label(tr(
                     "Keys play the layer marked KEYS; channel 10 plays the percussion (drum pads).",
-                );
+                ));
                 ui.separator();
-                ui.label("MIDI learn: click Learn, then move a knob or fader of your controller.");
+                ui.label(tr(
+                    "MIDI learn: click Learn, then move a knob or fader of your controller.",
+                ));
                 egui::Grid::new("midi_learn").striped(true).show(ui, |ui| {
                     for t in Target::ALL {
                         ui.label(t.name());
@@ -1251,10 +1286,45 @@ impl App {
         p.text(
             pos2(r.left() + 30.0, r.top() + 80.0),
             Align2::LEFT_CENTER,
-            spaced("ambient · drone · generative"),
+            spaced(&tr("AMBIENT · DRONE · GENERATIVE").to_lowercase()),
             FontId::proportional(10.0),
             INK_SOFT,
         );
+        // the language, and a newer version if there is one
+        let lr = Rect::from_min_size(pos2(r.left() + 236.0, r.top() + 70.0), vec2(80.0, 22.0));
+        ui.scope_builder(UiBuilder::new().max_rect(lr), |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                let es = self.ui_cfg.spanish;
+                let small = |s: &str| egui::RichText::new(s).size(10.0).color(INK);
+                if ui.selectable_label(!es, small("EN")).clicked() && es {
+                    self.ui_cfg.spanish = false;
+                }
+                if ui.selectable_label(es, small("ES")).clicked() && !es {
+                    self.ui_cfg.spanish = true;
+                }
+                if self.ui_cfg.spanish != es {
+                    crate::i18n::set_spanish(self.ui_cfg.spanish);
+                    let _ = crate::scene::save("ui.toml", &self.ui_cfg);
+                }
+            });
+        });
+        let update = self.update.lock().ok().and_then(|u| u.clone());
+        if let Some((v, page)) = update {
+            let ur = Rect::from_min_size(pos2(r.left() + 236.0, r.top() + 8.0), vec2(80.0, 22.0));
+            ui.scope_builder(UiBuilder::new().max_rect(ur), |ui| {
+                if ui
+                    .button(
+                        egui::RichText::new(format!("{} {v}", tr("Update")))
+                            .size(10.0)
+                            .color(RUST),
+                    )
+                    .clicked()
+                {
+                    open_url(&page);
+                }
+            });
+        }
         // the display
         let d = Rect::from_min_size(pos2(r.left() + 320.0, r.top() + 12.0), vec2(440.0, 80.0));
         display(&p, d);
@@ -1327,32 +1397,32 @@ impl App {
             let playing = self.playing;
             if theme::button(
                 ui,
-                if playing { "STOP" } else { "PLAY" },
+                if playing { tr("STOP") } else { tr("PLAY") },
                 if playing { "■" } else { "▶" },
                 playing,
             ) {
                 self.set_playing(!playing);
             }
-            if theme::button(ui, "NEXT", "⏭", false) {
+            if theme::button(ui, tr("NEXT"), "⏭", false) {
                 self.send(Command::NextSection);
             }
-            if theme::button(ui, "SEED", "⚄", false) {
+            if theme::button(ui, tr("SEED"), "⚄", false) {
                 self.new_seed();
             }
-            if theme::button(ui, "STAGE", "◐", self.stage) {
+            if theme::button(ui, tr("STAGE"), "◐", self.stage) {
                 self.stage = true;
             }
-            if theme::button(ui, "EXPORT", "⤓", false) {
-                self.export();
+            if theme::button(ui, tr("EXPORT"), "⤓", false) {
+                self.export_open = !self.export_open;
             }
             let live = self.midi.port.is_some();
-            if theme::button(ui, "MIDI", "♪", live || self.midi_open) {
+            if theme::button(ui, tr("MIDI"), "♪", live || self.midi_open) {
                 self.midi_open = !self.midi_open;
             }
             let on_air = self.stream.is_some();
             if theme::button(
                 ui,
-                if on_air { "ON AIR" } else { "LIVE" },
+                if on_air { tr("ON AIR") } else { tr("LIVE") },
                 "●",
                 on_air || self.stream_open,
             ) {
@@ -1362,18 +1432,260 @@ impl App {
         let _ = now;
     }
 
-    fn export(&mut self) {
-        let dir = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("."));
-        let name = format!("Kontinuum - {} - {}.ogg", CARTA[self.recipe].0, self.seed);
-        let path = dir.join(name);
+    /// Exports the music as it would play from the start: the mix, or one file per layer.
+    fn export(&mut self, stems: bool) {
+        let dir = crate::stream::recordings_dir();
+        let _ = std::fs::create_dir_all(&dir);
         let (seed, recipe, params) = (self.seed, CARTA[self.recipe].1, self.params);
-        let out = path.clone();
+        let (minutes, ext) = (self.export_minutes, self.export_format);
+        let base = format!("Kontinuum - {} - {}", CARTA[self.recipe].0, self.seed);
+        let status = self.cut_status.clone();
+        let say = move |s: String| {
+            if let Ok(mut x) = status.lock() {
+                *x = s;
+            }
+        };
+        if !stems {
+            let path = dir.join(format!("{base}.{ext}"));
+            say(format!(
+                "Exporting {minutes} minutes to {} …",
+                path.display()
+            ));
+            std::thread::spawn(move || {
+                say(
+                    match knt_cli::export(&path, seed, recipe, params, minutes, 15.0) {
+                        Ok(()) => format!("Exported: {}", path.display()),
+                        Err(e) => format!("Export failed: {e}"),
+                    },
+                );
+            });
+            return;
+        }
+        let folder = dir.join(format!("{base} - stems"));
+        let _ = std::fs::create_dir_all(&folder);
+        say(format!("Exporting the stems to {} …", folder.display()));
         std::thread::spawn(move || {
-            let _ = knt_cli::export(&out, seed, recipe, params, 10.0, 15.0);
+            // each layer alone, and what sounds beside the music; no leveler, so that they add
+            // up to the mix
+            let mut jobs: Vec<(String, Params)> = Vec::new();
+            for (i, l) in Layer::ALL.iter().enumerate() {
+                let mut p = params;
+                p.mutes = [true; knt_engine::LAYERS];
+                p.mutes[i] = false;
+                p.ambience = knt_engine::extras::Ambience::None;
+                p.lofi = false;
+                p.binaural = 0.0;
+                p.leveler = false;
+                jobs.push((format!("{} {}", i + 1, l.name()), p));
+            }
+            if params.ambience != knt_engine::extras::Ambience::None
+                || params.lofi
+                || params.binaural > 0.0
+            {
+                let mut p = params;
+                p.mutes = [true; knt_engine::LAYERS];
+                p.leveler = false;
+                jobs.push(("8 nature and beat".into(), p));
+            }
+            let n = jobs.len();
+            for (k, (name, p)) in jobs.into_iter().enumerate() {
+                say(format!("Exporting stem {} of {n}: {name} …", k + 1));
+                let path = folder.join(format!("{name}.{ext}"));
+                if let Err(e) = knt_cli::export(&path, seed, recipe, p, minutes, 15.0) {
+                    say(format!("Export failed: {e}"));
+                    return;
+                }
+            }
+            say(format!("The {n} stems are in {}", folder.display()));
         });
-        self.status = Some(format!("Exporting 10 minutes to {} ...", path.display()));
+    }
+
+    /// Starts or stops recording what plays.
+    fn toggle_recording(&mut self) {
+        if let Some(r) = self.recorder.take() {
+            let path = r.path.clone();
+            self.tap = r.stop();
+            if let Ok(mut s) = self.cut_status.lock() {
+                *s = format!("Recorded: {}", path.display());
+            }
+            return;
+        }
+        if self.stream.is_some() {
+            if let Ok(mut s) = self.cut_status.lock() {
+                *s = "Stop the stream first (or keep a copy of it: LIVE > Also stream to).".into();
+            }
+            return;
+        }
+        let (Some(tap), Some(flag)) = (self.tap.take(), self.tap_flag.clone()) else {
+            return;
+        };
+        let path = crate::stream::recordings_dir().join(format!(
+            "Kontinuum recording {}.wav",
+            chrono::Local::now().format("%Y-%m-%d %H-%M-%S")
+        ));
+        match crate::record::Recorder::start(tap, flag, path) {
+            Ok(r) => self.recorder = Some(r),
+            Err(e) => {
+                if let Ok(mut s) = self.cut_status.lock() {
+                    *s = format!("Recording failed: {e}");
+                }
+            }
+        }
+    }
+
+    /// The My recipes window: what plays now saved under a name, and loaded again.
+    fn mine_window(&mut self, ctx: &egui::Context) {
+        if !self.mine_open {
+            return;
+        }
+        let mut open = true;
+        let mut load = None;
+        let mut delete = None;
+        egui::Window::new(tr("My recipes"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_pos(pos2(900.0, 230.0))
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(tr(
+                        "What plays now (the recipe, the knobs, the sounds), to come back to.",
+                    ))
+                    .small(),
+                );
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.mine_name)
+                            .hint_text(tr("name"))
+                            .desired_width(180.0),
+                    );
+                    if ui.button(tr("Save as")).clicked() && !self.mine_name.trim().is_empty() {
+                        let name = self.mine_name.trim().to_string();
+                        self.ui_cfg.mine.retain(|m| m.name != name);
+                        self.ui_cfg.mine.push(MyRecipe {
+                            name,
+                            recipe: self.recipe,
+                            seed: self.seed,
+                            params: self.params,
+                        });
+                        self.mine_name.clear();
+                        let _ = crate::scene::save("ui.toml", &self.ui_cfg);
+                    }
+                });
+                ui.separator();
+                for (k, m) in self.ui_cfg.mine.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(&m.name).strong());
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} · seed {}",
+                                CARTA[m.recipe % CARTA.len()].0,
+                                m.seed
+                            ))
+                            .small(),
+                        );
+                        if ui.small_button(tr("Load")).clicked() {
+                            load = Some(k);
+                        }
+                        if ui.small_button(tr("Delete")).clicked() {
+                            delete = Some(k);
+                        }
+                    });
+                }
+            });
+        if let Some(k) = load {
+            let m = self.ui_cfg.mine[k].clone();
+            self.params = m.params;
+            self.seed = m.seed;
+            self.send(Command::Seed(m.seed));
+            self.choose_recipe(m.recipe % CARTA.len());
+        }
+        if let Some(k) = delete {
+            self.ui_cfg.mine.remove(k);
+            let _ = crate::scene::save("ui.toml", &self.ui_cfg);
+        }
+        if !open {
+            self.mine_open = false;
+        }
+    }
+
+    /// The EXPORT window.
+    fn export_window(&mut self, ctx: &egui::Context) {
+        if !self.export_open {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new(tr("Export and record"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_pos(pos2(760.0, 120.0))
+            .show(ctx, |ui| {
+                ui.label(tr(
+                    "The music of this recipe and seed, from the start, as a file.",
+                ));
+                ui.horizontal(|ui| {
+                    ui.label(tr("Length:"));
+                    for m in [5.0, 10.0, 30.0, 60.0] {
+                        ui.selectable_value(&mut self.export_minutes, m, format!("{m} min"));
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(tr("Format:"));
+                    for f in ["ogg", "flac", "wav"] {
+                        ui.selectable_value(&mut self.export_format, f, f);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui.button(tr("Export the mix")).clicked() {
+                        self.export(false);
+                    }
+                    if ui
+                        .button(tr("Export stems"))
+                        .on_hover_text(tr("One file per layer, to mix in another program"))
+                        .clicked()
+                    {
+                        self.export(true);
+                    }
+                });
+                ui.separator();
+                ui.label(tr(
+                    "Record what plays now, with what you play on the keyboard.",
+                ));
+                let rec = self.recorder.is_some();
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(if rec {
+                            tr("■ Stop recording")
+                        } else {
+                            tr("● Record")
+                        })
+                        .clicked()
+                    {
+                        self.toggle_recording();
+                    }
+                    if let Some(r) = &self.recorder {
+                        let s = r.started.elapsed().as_secs();
+                        ui.colored_label(RUST, format!("{:02}:{:02}", s / 60, s % 60));
+                    }
+                });
+                let cs = self
+                    .cut_status
+                    .lock()
+                    .map(|s| s.clone())
+                    .unwrap_or_default();
+                if !cs.is_empty() {
+                    ui.label(egui::RichText::new(cs).small());
+                }
+                if ui.button(tr("Open the recordings folder")).clicked() {
+                    let dir = crate::stream::recordings_dir();
+                    let _ = std::fs::create_dir_all(&dir);
+                    open_folder(&dir);
+                }
+            });
+        if !open {
+            self.export_open = false;
+        }
     }
 
     // ---- the Carta ----
@@ -1382,7 +1694,34 @@ impl App {
         let p = ui.painter().clone();
         let n = CARTA.len();
         let gap = 10.0;
-        let w = (r.width() - gap * (n - 1) as f32) / n as f32;
+        // the last tile: my recipes, narrower
+        let mine_w = 96.0;
+        let w = (r.width() - mine_w - gap * n as f32) / n as f32;
+        let mt = Rect::from_min_size(pos2(r.right() - mine_w, r.top()), vec2(mine_w, r.height()));
+        let resp = ui.interact(mt, egui::Id::unique("my_recipes"), Sense::click());
+        p.rect_filled(
+            mt.translate(vec2(0.0, 2.0)),
+            8.0,
+            Color32::from_black_alpha(80),
+        );
+        p.rect_filled(mt, 8.0, if self.mine_open { CREAM } else { CREAM_DARK });
+        p.text(
+            mt.center() - vec2(0.0, 10.0),
+            Align2::CENTER_CENTER,
+            "★",
+            FontId::proportional(18.0),
+            AMBER,
+        );
+        p.text(
+            mt.center() + vec2(0.0, 14.0),
+            Align2::CENTER_CENTER,
+            tr("My recipes"),
+            FontId::proportional(12.0),
+            INK,
+        );
+        if resp.clicked() {
+            self.mine_open = !self.mine_open;
+        }
         for (i, (name, recipe, about)) in CARTA.iter().enumerate() {
             let t = Rect::from_min_size(
                 pos2(r.left() + i as f32 * (w + gap), r.top()),
@@ -1448,7 +1787,7 @@ impl App {
                 vec2(w, r.height()),
             );
             let p = ui.painter().clone();
-            plate(&p, m, Some(layer.name()));
+            plate(&p, m, Some(tr(layer.name())));
             // the live window
             let win = Rect::from_min_size(m.left_top() + vec2(12.0, 32.0), vec2(w - 24.0, 120.0));
             display(&p, win);
@@ -1490,7 +1829,7 @@ impl App {
             let mr = Rect::from_center_size(lc, vec2(40.0, 40.0));
             if ui
                 .interact(mr, egui::Id::unique(("mute", i)), Sense::click())
-                .on_hover_text("Mute / unmute")
+                .on_hover_text(tr("Mute / unmute"))
                 .clicked()
             {
                 self.params.mutes[i] = !muted;
@@ -1531,7 +1870,7 @@ impl App {
             );
             if ui
                 .interact(kr, egui::Id::unique(("kb", i)), Sense::click())
-                .on_hover_text("The MIDI keyboard plays this layer")
+                .on_hover_text(tr("The MIDI keyboard plays this layer"))
                 .clicked()
             {
                 self.params.play_layer = layer;
@@ -1688,7 +2027,7 @@ impl App {
 
     fn director(&mut self, ui: &mut Ui, r: Rect) {
         let p = ui.painter().clone();
-        plate(&p, r, Some("The director"));
+        plate(&p, r, Some(tr("The director")));
         let mut c = ui.new_child(
             UiBuilder::new().max_rect(r.shrink2(vec2(20.0, 30.0)).translate(vec2(0.0, 12.0))),
         );
@@ -1696,48 +2035,52 @@ impl App {
             ui.spacing_mut().item_spacing.x = 6.0;
             let bias = |v: &mut f32| (*v + 1.0) / 2.0;
             let pr = &mut self.params;
-            theme::knob(ui, &mut pr.evolution, "EVOLUTION", 0.6);
+            theme::knob(ui, &mut pr.evolution, tr("EVOLUTION"), 0.6);
             let mut x = bias(&mut pr.pace_bias);
-            if theme::knob(ui, &mut x, "PACE", 0.5) {
+            if theme::knob(ui, &mut x, tr("PACE"), 0.5) {
                 pr.pace_bias = x * 2.0 - 1.0;
             }
             let mut x = bias(&mut pr.brightness_bias);
-            if theme::knob(ui, &mut x, "BRIGHTNESS", 0.5) {
+            if theme::knob(ui, &mut x, tr("BRIGHTNESS"), 0.5) {
                 pr.brightness_bias = x * 2.0 - 1.0;
             }
             let mut x = bias(&mut pr.density_bias);
-            if theme::knob(ui, &mut x, "DENSITY", 0.5) {
+            if theme::knob(ui, &mut x, tr("DENSITY"), 0.5) {
                 pr.density_bias = x * 2.0 - 1.0;
             }
             let mut x = bias(&mut pr.space_bias);
-            if theme::knob(ui, &mut x, "SPACE", 0.5) {
+            if theme::knob(ui, &mut x, tr("SPACE"), 0.5) {
                 pr.space_bias = x * 2.0 - 1.0;
             }
             let mut x = bias(&mut pr.echo_bias);
-            if theme::knob(ui, &mut x, "ECHO", 0.5) {
+            if theme::knob(ui, &mut x, tr("ECHO"), 0.5) {
                 pr.echo_bias = x * 2.0 - 1.0;
             }
-            theme::knob(ui, &mut pr.warmth, "WARMTH", 0.35);
-            theme::knob(ui, &mut pr.volume, "VOLUME", 0.8);
+            theme::knob(ui, &mut pr.warmth, tr("WARMTH"), 0.35);
+            theme::knob(ui, &mut pr.volume, tr("VOLUME"), 0.8);
         });
         c.add_space(8.0);
         c.horizontal(|ui| {
-            ui.label(egui::RichText::new("When you play:").color(INK).strong());
+            ui.label(
+                egui::RichText::new(tr("When you play:"))
+                    .color(INK)
+                    .strong(),
+            );
             for m in Mode::ALL {
                 if ui
-                    .selectable_label(self.params.mode == m, m.name())
+                    .selectable_label(self.params.mode == m, tr(m.name()))
                     .clicked()
                 {
                     self.params.mode = m;
                 }
             }
             ui.separator();
-            ui.checkbox(&mut self.params.hold_harmony, "Hold harmony");
+            ui.checkbox(&mut self.params.hold_harmony, tr("Hold harmony"));
         });
         c.horizontal(|ui| {
-            ui.label(egui::RichText::new("Sleep timer:").color(INK).strong());
+            ui.label(egui::RichText::new(tr("Sleep timer:")).color(INK).strong());
             for (label, m) in [
-                ("Off", 0.0),
+                (tr("Off"), 0.0),
                 ("15 min", 15.0),
                 ("30 min", 30.0),
                 ("60 min", 60.0),
@@ -1756,10 +2099,10 @@ impl App {
             }
         });
         c.horizontal(|ui| {
-            ui.label(egui::RichText::new("Nature:").color(INK).strong());
+            ui.label(egui::RichText::new(tr("Nature:")).color(INK).strong());
             for a in knt_engine::extras::Ambience::ALL {
                 if ui
-                    .selectable_label(self.params.ambience == a, a.name())
+                    .selectable_label(self.params.ambience == a, tr(a.name()))
                     .clicked()
                 {
                     self.params.ambience = a;
@@ -1768,23 +2111,23 @@ impl App {
             ui.add(
                 egui::Slider::new(&mut self.params.ambience_level, 0.0..=1.0)
                     .show_value(false)
-                    .text("level"),
+                    .text(tr("level")),
             );
         });
         c.horizontal(|ui| {
-            ui.checkbox(&mut self.params.lofi, "Lo-fi")
-                .on_hover_text("A soft beat, the crackle of a record, a darker sound");
+            ui.checkbox(&mut self.params.lofi, tr("Lo-fi"))
+                .on_hover_text(tr("A soft beat, the crackle of a record, a darker sound"));
             ui.separator();
-            ui.label(egui::RichText::new("Binaural:").color(INK).strong())
-                .on_hover_text("A low tone in each ear, a few hertz apart. Use headphones.");
-            for (label, b) in [("off", 0.0), ("4 Hz", 4.0), ("10 Hz", 10.0), ("14 Hz", 14.0)] {
+            ui.label(egui::RichText::new(tr("Binaural:")).color(INK).strong())
+                .on_hover_text(tr("A low tone in each ear, a few hertz apart. Use headphones."));
+            for (label, b) in [(tr("off"), 0.0), ("4 Hz", 4.0), ("10 Hz", 10.0), ("14 Hz", 14.0)] {
                 if ui.selectable_label(self.params.binaural == b, label).clicked() {
                     self.params.binaural = b;
                 }
             }
             ui.separator();
-            ui.checkbox(&mut self.follow_clock, "Follow the clock")
-                .on_hover_text("The recipe changes with the time of day: mist at night, focus in the morning, dusk in the evening");
+            ui.checkbox(&mut self.follow_clock, tr("Follow the clock"))
+                .on_hover_text(tr("The recipe changes with the time of day: mist at night, focus in the morning, dusk in the evening"));
         });
     }
 
@@ -1792,7 +2135,7 @@ impl App {
 
     fn log(&mut self, ui: &mut Ui, r: Rect, _now: f64) {
         let p = ui.painter().clone();
-        plate(&p, r, Some("Log & automations"));
+        plate(&p, r, Some(tr("Log & automations")));
         let d = Rect::from_min_size(
             r.left_top() + vec2(14.0, 32.0),
             vec2(r.width() - 28.0, 92.0),
@@ -1919,6 +2262,65 @@ fn looks_like_youtube_key(key: &str) -> bool {
         && groups
             .iter()
             .all(|g| !g.is_empty() && g.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+/// The window's own settings (ui.toml).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct UiConfig {
+    pub spanish: bool,
+    pub mine: Vec<MyRecipe>,
+}
+
+/// A recipe of mine: a recipe of the Menu with my knobs and sounds, and a seed.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MyRecipe {
+    pub name: String,
+    pub recipe: usize,
+    pub seed: u64,
+    pub params: Params,
+}
+
+/// Asks GitHub for the latest release, on its own thread; a newer one goes to `out`.
+pub fn check_update(out: std::sync::Arc<std::sync::Mutex<Option<(String, String)>>>) {
+    std::thread::spawn(move || {
+        let Ok(r) = ureq::get("https://api.github.com/repos/Almaper/Kontinuum/releases/latest")
+            .set("User-Agent", "Kontinuum")
+            .timeout(std::time::Duration::from_secs(10))
+            .call()
+        else {
+            return;
+        };
+        let Ok(v) = r.into_json::<serde_json::Value>() else {
+            return;
+        };
+        let tag = v["tag_name"]
+            .as_str()
+            .unwrap_or("")
+            .trim_start_matches('v')
+            .to_string();
+        let page = v["html_url"].as_str().unwrap_or("").to_string();
+        let ver = |s: &str| -> Vec<u32> { s.split('.').map(|x| x.parse().unwrap_or(0)).collect() };
+        if !tag.is_empty()
+            && ver(&tag) > ver(env!("CARGO_PKG_VERSION"))
+            && let Ok(mut o) = out.lock()
+        {
+            *o = Some((tag, page));
+        }
+    });
+}
+
+/// Opens a web page in the browser.
+pub fn open_url(url: &str) {
+    let _ = if cfg!(windows) {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(url).spawn()
+    } else {
+        std::process::Command::new("xdg-open").arg(url).spawn()
+    };
 }
 
 /// Opens a folder in the system's file manager.

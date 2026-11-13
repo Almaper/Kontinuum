@@ -9,8 +9,10 @@
 mod app;
 mod canvas;
 mod chat;
+mod i18n;
 mod midi;
 mod promo;
+mod record;
 mod scene;
 mod stage;
 mod stream;

@@ -86,12 +86,24 @@ jobs:
           else
             tar czf "$name.tar.gz" "$name"
           fi
+      - name: Installer (Windows)
+        if: runner.os == 'Windows'
+        # the zip is enough if this fails
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $env:KNT_VERSION = $v
+          $env:KNT_SRC = (Resolve-Path "dist/Kontinuum-v$v-windows-x64").Path
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" tools\installer.iss
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
           path: |
             dist/*.zip
             dist/*.tar.gz
+            dist/*.exe
 
   release:
     needs: build
@@ -114,4 +126,4 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "Kontinuum $version" \
-            --notes "Downloads for Windows, macOS (Apple silicon and Intel) and Linux. Unzip and run Kontinuum. The binaries are not signed: on Windows click More info > Run anyway; on macOS right-click Kontinuum.app > Open the first time."
+            --notes "Downloads for Windows (an installer, or a zip), macOS (Apple silicon and Intel) and Linux. Install, or unzip and run Kontinuum. The binaries are not signed: on Windows click More info > Run anyway; on macOS right-click Kontinuum.app > Open the first time."

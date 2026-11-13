@@ -145,6 +145,8 @@ pub struct Params {
     pub lofi: bool,
     /// Binaural tones: the beat in Hz (0: off).
     pub binaural: f32,
+    /// The leveler keeps the loudness even (off for stems, which must add up to the mix).
+    pub leveler: bool,
 }
 
 impl Default for Params {
@@ -177,6 +179,7 @@ impl Default for Params {
             ambience_level: 0.5,
             lofi: false,
             binaural: 0.0,
+            leveler: true,
         }
     }
 }
@@ -559,7 +562,11 @@ impl Engine {
             r -= self.hp[1].lp(r, hp_c);
             // the leveler: about -18 dBFS of RMS, within -6..+8 dB, over ~10 s
             self.loudness += ((l * l + r * r) * 0.5 - self.loudness) * 0.000_002_3;
-            let target = (0.125 / self.loudness.max(1e-6).sqrt()).clamp(0.5, 2.5);
+            let target = if p.leveler {
+                (0.125 / self.loudness.max(1e-6).sqrt()).clamp(0.5, 2.5)
+            } else {
+                1.0
+            };
             self.level_gain += (target - self.level_gain) * 0.000_005;
             l *= self.level_gain;
             r *= self.level_gain;
