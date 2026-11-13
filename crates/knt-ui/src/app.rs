@@ -73,6 +73,12 @@ pub struct App {
     /// The schedule started the stream; the user stopped it within the schedule's hours.
     scheduled: bool,
     schedule_held: bool,
+    /// The YouTube chat: its settings, its reader, its logic, what it says, a message to try.
+    chat_cfg: crate::chat::Config,
+    chat: Option<crate::chat::Reader>,
+    brain: crate::chat::Brain,
+    chat_status: String,
+    chat_try: String,
     /// What the cutting of long videos says.
     cut_status: std::sync::Arc<std::sync::Mutex<String>>,
     /// The smoothed picture state, for the stage and the layers' windows.
@@ -125,6 +131,11 @@ impl App {
             scheduled: false,
             schedule_held: false,
             cut_status: Default::default(),
+            chat_cfg: crate::scene::load("chat.toml"),
+            chat: None,
+            brain: crate::chat::Brain::default(),
+            chat_status: String::new(),
+            chat_try: String::new(),
             live_since: None,
             promo: None,
             visual: stage::Visual::default(),
@@ -194,6 +205,7 @@ impl App {
         self.midi_in(now);
         self.focus_tick();
         self.schedule_tick();
+        self.chat_tick();
         if self
             .short_until
             .is_some_and(|t| std::time::Instant::now() >= t)
@@ -393,6 +405,176 @@ impl App {
         self.live_since = None;
         self.short_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
         self.stream = Some(Stream::start(cfg, tap, flag, shared));
+    }
+
+    /// The chat: what it brings, what it asks, the poll on the stage.
+    fn chat_tick(&mut self) {
+        use crate::chat::{Action, Event};
+        let now = crate::scene::clock();
+        let mut actions = Vec::new();
+        let mut events = Vec::new();
+        if let Some(r) = &self.chat {
+            while let Ok(e) = r.rx.try_recv() {
+                events.push(e);
+            }
+        }
+        for e in events {
+            match e {
+                Event::Message(m) => {
+                    actions.extend(self.brain.message(&m, &self.chat_cfg, now, self.recipe));
+                }
+                Event::Numbers {
+                    viewers,
+                    likes,
+                    subs,
+                } => {
+                    if let Some(v) = viewers {
+                        actions.push(Action::Viewers(v));
+                    }
+                    actions.extend(self.brain.numbers(subs, likes));
+                }
+                Event::Status(s) => self.chat_status = s,
+            }
+        }
+        actions.extend(self.brain.tick(&self.chat_cfg, now, self.recipe));
+        for a in actions {
+            self.chat_action(a, now);
+        }
+        // the poll on the stage
+        let poll = self.brain.poll.as_ref().map(|p| crate::scene::Poll {
+            question: "What next?".into(),
+            options: p
+                .options
+                .iter()
+                .zip(&p.votes)
+                .map(|(&r, &v)| (CARTA[r].0.to_string(), v))
+                .collect(),
+            ends: p.ends,
+        });
+        crate::scene::with_overlay(|o| o.poll = poll);
+    }
+
+    fn chat_action(&mut self, a: crate::chat::Action, now: f64) {
+        use crate::chat::Action;
+        match a {
+            Action::Recipe(r) => self.choose_recipe(r),
+            Action::Ambience(x) => {
+                self.params.ambience = x;
+                if self.params.ambience_level < 0.2 {
+                    self.params.ambience_level = 0.5;
+                }
+            }
+            Action::Lofi(on) => self.params.lofi = on,
+            Action::Greet(name) => crate::scene::with_overlay(|o| o.greets.push((name, now))),
+            Action::Milestone(t) => crate::scene::with_overlay(|o| o.milestone = Some((t, now))),
+            Action::Viewers(v) => crate::scene::with_overlay(|o| o.viewers = Some(v)),
+            Action::Event(t) => crate::scene::with_overlay(|o| o.chat_event = Some((t, now))),
+        }
+    }
+
+    /// The YouTube chat in the LIVE window.
+    fn chat_ui(&mut self, ui: &mut Ui) {
+        egui::CollapsingHeader::new("Chat (YouTube)").default_open(false).show(ui, |ui| {
+            let connected = self.chat.is_some();
+            let c = &mut self.chat_cfg;
+            ui.add_enabled_ui(!connected, |ui| {
+                egui::Grid::new("chat_cfg").num_columns(2).show(ui, |ui| {
+                    ui.label("API key:");
+                    ui.add(egui::TextEdit::singleline(&mut c.api_key).password(true).desired_width(260.0))
+                        .on_hover_text(
+                            "console.cloud.google.com > a new project > APIs & Services > Library > \
+                             YouTube Data API v3 > Enable; then Credentials > Create credentials > API key",
+                        );
+                    ui.end_row();
+                    ui.label("Live video:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut c.video)
+                            .hint_text("the link of the live video")
+                            .desired_width(260.0),
+                    );
+                    ui.end_row();
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut c.votes, "Votes (!orbit, !1)");
+                ui.label("poll every");
+                ui.add(egui::DragValue::new(&mut c.poll_minutes).range(0..=120).suffix(" min"));
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut c.sounds, "Sounds (!nature rain, !lofi)");
+                ui.checkbox(&mut c.greet, "Welcome newcomers");
+            });
+            ui.horizontal(|ui| {
+                ui.label("Blocked words:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut c.blocked_words)
+                        .hint_text("more, comma-separated (insults are built in)")
+                        .desired_width(240.0),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label("Ignored names:");
+                ui.add(egui::TextEdit::singleline(&mut c.blocked_names).desired_width(240.0));
+            });
+            ui.horizontal(|ui| {
+                if !connected {
+                    if ui.button("Connect to the chat").clicked() {
+                        let _ = crate::scene::save("chat.toml", &self.chat_cfg);
+                        match crate::chat::Reader::start(&self.chat_cfg) {
+                            Ok(r) => {
+                                self.chat = Some(r);
+                                self.brain = crate::chat::Brain::default();
+                                self.chat_status = "Connecting…".into();
+                            }
+                            Err(e) => self.chat_status = e,
+                        }
+                    }
+                } else if ui.button("Disconnect").clicked() {
+                    self.chat = None;
+                    self.chat_status = "Disconnected.".into();
+                    crate::scene::with_overlay(|o| o.viewers = None);
+                }
+                ui.label(egui::RichText::new(&self.chat_status).small());
+            });
+            ui.horizontal(|ui| {
+                ui.label("Try:");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.chat_try)
+                        .hint_text("Name: !orbit")
+                        .desired_width(200.0),
+                );
+                if ui.button("Send").clicked() && !self.chat_try.trim().is_empty() {
+                    let (name, text) = self
+                        .chat_try
+                        .split_once(':')
+                        .map(|(a, b)| (a.trim().to_string(), b.trim().to_string()))
+                        .unwrap_or(("Tester".into(), self.chat_try.trim().to_string()));
+                    let m = crate::chat::Message {
+                        author_id: format!("try-{name}"),
+                        author: name,
+                        text,
+                        owner: false,
+                    };
+                    let now = crate::scene::clock();
+                    let acts = self.brain.message(&m, &self.chat_cfg, now, self.recipe);
+                    if acts.is_empty() {
+                        self.chat_status = "That message does nothing (or it is blocked).".into();
+                    }
+                    for a in acts {
+                        self.chat_action(a, now);
+                    }
+                    self.chat_try.clear();
+                }
+            });
+            ui.label(
+                egui::RichText::new(
+                    "Nothing viewers write is shown: only commands act, and only clean names \
+                     appear. Each read of the chat costs 5 of YouTube's 10,000 daily units: \
+                     reading every 15 s lasts about 8 hours.",
+                )
+                .small(),
+            );
+        });
     }
 
     /// The focus timer: 25 minutes of focus, 5 of break (15 after four), on the stage.
@@ -657,6 +839,8 @@ impl App {
                         ui.label(egui::RichText::new(format!("File: {}", r.display())).small());
                     }
                 });
+                ui.separator();
+                self.chat_ui(ui);
                 ui.separator();
                 self.more_ui(ui);
                 ui.separator();

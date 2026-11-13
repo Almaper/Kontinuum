@@ -8,6 +8,7 @@
 
 mod app;
 mod canvas;
+mod chat;
 mod midi;
 mod promo;
 mod scene;
