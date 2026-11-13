@@ -1,0 +1,29 @@
+[package]
+name = "knt-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Kontinuum, the app: the warm analog panel, the Carta, the director and the stage"
+
+[[bin]]
+name = "Kontinuum"
+path = "src/main.rs"
+
+[dependencies]
+knt-engine = { path = "../knt-engine" }
+knt-player = { path = "../knt-player" }
+knt-cli = { path = "../knt-cli" }
+eframe = "0.37.0"
+# Saves the --screenshot PNG.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# MIDI input.
+midir = "0.11.1"
+rtrb = "0.4.1"
+# The MIDI map.
+serde = { version = "1", features = ["derive"] }
+toml = "=0.9.12"
+# The stage drawn in software for the live stream, and its text.
+tiny-skia = "0.11.4"
+fontdue = "0.9.5"
+epaint_default_fonts = "0.37.0"

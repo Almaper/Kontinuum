@@ -1,0 +1,7 @@
+Kontinuum
+Copyright (C) 2026 Almaper
+
+The audio output (crates/knt-player/src/output.rs) and the encoders
+(crates/knt-cli/src/encode.rs) are modified, in 2026, from code that is
+Copyright (C) 2026 the OpenRB-338 authors, under the GNU General Public
+License v3.0 (GPL-3.0-only).

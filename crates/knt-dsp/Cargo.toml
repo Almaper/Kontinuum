@@ -1,0 +1,9 @@
+[package]
+name = "knt-dsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Kontinuum's DSP building blocks: oscillators, envelopes, filters, chorus, delay and reverb"
+
+[dependencies]
