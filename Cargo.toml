@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
-members = ["crates/rbs", "crates/orb-engine", "crates/orb-cli", "crates/rbm", "crates/orb-player", "crates/orb-ui-art", "crates/orb-ui", "crates/orb-testkit"]
+members = [
+    "crates/knt-dsp",
+    "crates/knt-engine",
+    "crates/knt-player",
+    "crates/knt-cli",
+    "crates/knt-ui",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -8,13 +14,16 @@ edition = "2024"
 license = "GPL-3.0-only"
 publish = false
 
-# The SHA-256 of the 128 MB RB20FUL.DAT (rbm::dat) takes seconds unoptimized: the tests of
-# `orb mod recrypt` hash a stand-in file several times.
-[profile.dev.package.sha2]
-opt-level = 3
+# The DSP runs per sample: even the dev build is optimized, so that `cargo run` plays without
+# dropouts and the tests that render minutes of music stay quick.
+[profile.dev.package."*"]
+opt-level = 2
 
-# The profile of the packages (scripts/build.sh, docs/building.md): link-time optimization costs
-# a long build, so `cargo build --release` stays as it is for everyday work. Panics stay unwinding.
+[profile.dev]
+opt-level = 1
+
+# The profile of the packages: link-time optimization costs a long build, so
+# `cargo build --release` stays as it is for everyday work.
 [profile.dist]
 inherits = "release"
 lto = "fat"

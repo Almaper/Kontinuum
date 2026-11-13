@@ -1,0 +1,19 @@
+[package]
+name = "knt-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Kontinuum, the app: the warm analog panel, the Carta, the director and the stage"
+
+[[bin]]
+name = "Kontinuum"
+path = "src/main.rs"
+
+[dependencies]
+knt-engine = { path = "../knt-engine" }
+knt-player = { path = "../knt-player" }
+knt-cli = { path = "../knt-cli" }
+eframe = "0.37.0"
+# Saves the --screenshot PNG.
+image = { version = "0.25", default-features = false, features = ["png"] }

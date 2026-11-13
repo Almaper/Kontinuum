@@ -1,0 +1,18 @@
+[package]
+name = "knt-player"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Kontinuum's real-time player: the engine in an audio callback"
+
+[dependencies]
+knt-engine = { path = "../knt-engine" }
+# Audio output.
+cpal = "0.18.2"
+# The lock-free queues between the UI thread and the callback.
+rtrb = "0.4.1"
+# The lock-free snapshot the callback publishes.
+triple_buffer = "9.0.0"
+# The resampler for a device that does not offer 44.1 kHz.
+rubato = { version = "5.0.1", default-features = false }
