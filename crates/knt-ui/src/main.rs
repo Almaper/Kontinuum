@@ -14,6 +14,7 @@ mod scene;
 mod stage;
 mod stream;
 mod theme;
+mod thumb;
 
 use std::path::PathBuf;
 

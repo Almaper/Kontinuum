@@ -621,6 +621,12 @@ pub fn write(p: &Playing, lang: Lang, chapters: &Chapters) -> Promo {
     }
 }
 
+/// The words a viewer searches for, for a recipe ("Deep Focus Music"), in a language.
+pub fn lead(recipe: usize, spanish: bool) -> &'static str {
+    let f = &PROFILES[recipe.min(PROFILES.len() - 1)];
+    if spanish { f.lead_es } else { f.lead }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

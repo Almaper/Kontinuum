@@ -1145,6 +1145,10 @@ pub fn draw(cv: &mut dyn Canvas, s: &Snapshot, vis: &Visual, live: Option<&str>,
         cv.fill_below(&[pos2(0.0, 0.0), pos2(w, 0.0)], h, dark, dark);
     }
 
+    // a bare picture (a thumbnail): no captions
+    if ov.bare {
+        return;
+    }
     // the captions
     let dish = CARTA[id].0;
     let (lines, _, width) = crate::theme::wordmark_lines(pos2(60.0 * u, 50.0 * u), 30.0 * u);

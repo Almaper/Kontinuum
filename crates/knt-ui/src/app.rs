@@ -66,6 +66,15 @@ pub struct App {
     promo: Option<(String, promo::Promo)>,
     /// The recipe follows the time of day.
     pub follow_clock: bool,
+    /// A Short being recorded: when it ends.
+    short_until: Option<std::time::Instant>,
+    /// The focus timer: when the phase began, focus (true) or break, the cycle.
+    focus: Option<(std::time::Instant, bool, u32)>,
+    /// The schedule started the stream; the user stopped it within the schedule's hours.
+    scheduled: bool,
+    schedule_held: bool,
+    /// What the cutting of long videos says.
+    cut_status: std::sync::Arc<std::sync::Mutex<String>>,
     /// The smoothed picture state, for the stage and the layers' windows.
     visual: stage::Visual,
 }
@@ -111,6 +120,11 @@ impl App {
             stream_msg: None,
             chapters: promo::Chapters::default(),
             follow_clock: false,
+            short_until: None,
+            focus: None,
+            scheduled: false,
+            schedule_held: false,
+            cut_status: Default::default(),
             live_since: None,
             promo: None,
             visual: stage::Visual::default(),
@@ -178,6 +192,19 @@ impl App {
 
     fn sync(&mut self, now: f64) {
         self.midi_in(now);
+        self.focus_tick();
+        self.schedule_tick();
+        if self
+            .short_until
+            .is_some_and(|t| std::time::Instant::now() >= t)
+        {
+            self.short_until = None;
+            self.stop_stream();
+            self.stream_msg = Some(format!(
+                "The Short is in {}",
+                crate::stream::recordings_dir().display()
+            ));
+        }
         // the time of day chooses the recipe
         if self.follow_clock && self.playing {
             let (hour, _) = crate::scene::local_time();
@@ -333,7 +360,161 @@ impl App {
         }
         self.chapters = promo::Chapters::default();
         self.live_since = Some(std::time::Instant::now());
+        self.short_until = None;
         self.stream = Some(Stream::start(self.stream_cfg.clone(), tap, flag, shared));
+    }
+
+    /// Records a 60-second Short: the stage upright (9:16), to a file in the recordings folder.
+    pub fn record_short(&mut self) {
+        if self.stream.is_some() {
+            self.stream_msg = Some("Stop the stream first: a Short records on its own.".into());
+            return;
+        }
+        let (Some(tap), Some(flag), Some(shared)) =
+            (self.tap.take(), self.tap_flag.clone(), self.shared.clone())
+        else {
+            self.stream_msg = Some("There is no audio player to record.".into());
+            return;
+        };
+        let dir = crate::stream::recordings_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let name = format!(
+            "Kontinuum Short {} {}.mp4",
+            CARTA[self.recipe % CARTA.len()].0,
+            chrono::Local::now().format("%Y-%m-%d %H-%M-%S")
+        );
+        let mut cfg = self.stream_cfg.clone();
+        cfg.record = Some(dir.join(name));
+        cfg.vertical = true;
+        cfg.keep_copy = false;
+        if !self.playing {
+            self.set_playing(true);
+        }
+        self.live_since = None;
+        self.short_until = Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+        self.stream = Some(Stream::start(cfg, tap, flag, shared));
+    }
+
+    /// The focus timer: 25 minutes of focus, 5 of break (15 after four), on the stage.
+    fn focus_tick(&mut self) {
+        let Some((start, working, cycle)) = self.focus else {
+            crate::scene::with_overlay(|o| o.focus = None);
+            return;
+        };
+        let total = if working {
+            25.0 * 60.0
+        } else if cycle % 4 == 0 {
+            15.0 * 60.0
+        } else {
+            5.0 * 60.0
+        };
+        let left = total - start.elapsed().as_secs_f64();
+        if left <= 0.0 {
+            let next_working = !working;
+            let next_cycle = if next_working { cycle } else { cycle + 1 };
+            self.focus = Some((std::time::Instant::now(), next_working, next_cycle));
+            let text = if next_working {
+                "Back to focus"
+            } else {
+                "Time for a break"
+            };
+            let at = crate::scene::clock();
+            crate::scene::with_overlay(|o| o.milestone = Some((text.into(), at)));
+            return;
+        }
+        let label = if working { "FOCUS" } else { "BREAK" };
+        crate::scene::with_overlay(|o| {
+            o.focus = Some(crate::scene::Focus {
+                label: label.into(),
+                left,
+                total,
+            })
+        });
+    }
+
+    /// Streaming by the clock: starts in the schedule's hours, stops after them.
+    fn schedule_tick(&mut self) {
+        let sch = &self.stream_cfg.schedule;
+        if !sch.on || self.stream_cfg.key.trim().is_empty() {
+            return;
+        }
+        let (hour, _) = crate::scene::local_time();
+        let within = sch.within(hour);
+        if within && self.stream.is_none() && !self.schedule_held {
+            self.scheduled = true;
+            self.go_live();
+        } else if !within {
+            self.schedule_held = false;
+            if self.scheduled && self.stream.is_some() {
+                self.stop_stream();
+                self.scheduled = false;
+            }
+        }
+    }
+
+    /// Cuts the last recording into long videos (its first 1, 3 and 8 hours), in the background.
+    fn cut_long_videos(&mut self) {
+        let dir = crate::stream::recordings_dir();
+        let last = std::fs::read_dir(&dir).ok().and_then(|d| {
+            d.flatten()
+                .filter(|e| {
+                    let n = e.file_name().to_string_lossy().to_string();
+                    n.starts_with("Kontinuum live") && n.ends_with(".mkv")
+                })
+                .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
+                .map(|e| e.path())
+        });
+        let Some(src) = last else {
+            self.stream_msg = Some(format!(
+                "No recording yet in {}: turn on \"Keep a copy\" and stream first.",
+                dir.display()
+            ));
+            return;
+        };
+        let ffmpeg = self.stream_cfg.ffmpeg();
+        let status = self.cut_status.clone();
+        if let Ok(mut s) = status.lock() {
+            *s = format!("Cutting {}…", src.display());
+        }
+        std::thread::spawn(move || {
+            let mut made = Vec::new();
+            for hours in [1u32, 3, 8] {
+                let stem = src
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let out = src.with_file_name(format!("{stem} - {hours} h.mp4"));
+                let ok = std::process::Command::new(&ffmpeg)
+                    .args(["-v", "error", "-y", "-i"])
+                    .arg(&src)
+                    .args([
+                        "-t",
+                        &(hours * 3600).to_string(),
+                        "-c",
+                        "copy",
+                        "-movflags",
+                        "+faststart",
+                    ])
+                    .arg(&out)
+                    .stdin(std::process::Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if ok {
+                    made.push(format!("{hours} h"));
+                }
+            }
+            if let Ok(mut s) = status.lock() {
+                *s = if made.is_empty() {
+                    "The cut failed (is ffmpeg there?).".into()
+                } else {
+                    format!(
+                        "Made the {} videos next to the recording (a shorter recording gives shorter videos).",
+                        made.join(", ")
+                    )
+                };
+            }
+        });
     }
 
     pub fn stop_stream(&mut self) {
@@ -477,6 +658,8 @@ impl App {
                     }
                 });
                 ui.separator();
+                self.more_ui(ui);
+                ui.separator();
                 self.stage_options_ui(ui);
                 ui.separator();
                 self.texts_ui(ui);
@@ -548,11 +731,138 @@ impl App {
             self.go_live();
         }
         if stop {
+            if self.scheduled {
+                // stopped by hand: the schedule waits for its next hours
+                self.schedule_held = true;
+                self.scheduled = false;
+            }
+            self.short_until = None;
             self.stop_stream();
         }
         if !open {
             self.stream_open = false;
         }
+    }
+
+    /// More of the LIVE window: other platforms, a copy, the schedule, the focus timer, tools.
+    fn more_ui(&mut self, ui: &mut Ui) {
+        let running = self.stream.is_some();
+        egui::CollapsingHeader::new("Also stream to")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.add_enabled_ui(!running, |ui| {
+                    egui::Grid::new("extra_dest").num_columns(3).show(ui, |ui| {
+                        for d in &mut self.stream_cfg.extra {
+                            ui.checkbox(&mut d.on, d.name.clone());
+                            ui.add(egui::TextEdit::singleline(&mut d.url).desired_width(200.0));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut d.key)
+                                    .password(true)
+                                    .hint_text("stream key")
+                                    .desired_width(140.0),
+                            );
+                            ui.end_row();
+                        }
+                    });
+                    if ui.small_button("+ another").clicked() {
+                        self.stream_cfg.extra.push(crate::stream::Destination {
+                            name: "Other".into(),
+                            url: "rtmp://".into(),
+                            ..Default::default()
+                        });
+                    }
+                    ui.checkbox(
+                        &mut self.stream_cfg.keep_copy,
+                        "Keep a copy of every stream (in Videos\\Kontinuum)",
+                    );
+                });
+            });
+        egui::CollapsingHeader::new("Schedule")
+            .default_open(false)
+            .show(ui, |ui| {
+                let sch = &mut self.stream_cfg.schedule;
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut sch.on, "Go live every day from");
+                    ui.add(egui::TextEdit::singleline(&mut sch.start).desired_width(48.0));
+                    ui.label("to");
+                    ui.add(egui::TextEdit::singleline(&mut sch.stop).desired_width(48.0));
+                });
+                let ok = crate::stream::parse_hm(&sch.start).is_some()
+                    && crate::stream::parse_hm(&sch.stop).is_some();
+                ui.label(
+                    egui::RichText::new(if ok {
+                        "Local time, HH:MM. Kontinuum must be open; it starts and stops on its own."
+                    } else {
+                        "Write the times as HH:MM, e.g. 22:00."
+                    })
+                    .small(),
+                );
+            });
+        egui::CollapsingHeader::new("Focus timer")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if self.focus.is_none() {
+                        if ui.button("Start 25 / 5").clicked() {
+                            self.focus = Some((std::time::Instant::now(), true, 1));
+                        }
+                    } else if ui.button("Stop the timer").clicked() {
+                        self.focus = None;
+                    }
+                    ui.label(
+                        egui::RichText::new("On the stage: 25 minutes of focus, 5 of break.")
+                            .small(),
+                    );
+                });
+            });
+        egui::CollapsingHeader::new("Tools")
+            .default_open(false)
+            .show(ui, |ui| {
+                if ui
+                    .button("Make a thumbnail")
+                    .on_hover_text("A 1280×720 image of the stage now, with big words, for YouTube")
+                    .clicked()
+                {
+                    let ov = crate::scene::overlay_now();
+                    let spanish = self.stream_cfg.lang == promo::Lang::Spanish;
+                    self.stream_msg = Some(
+                        match crate::thumb::make(&self.snap, &self.visual, &ov, spanish) {
+                            Ok(p) => format!("Thumbnail saved: {}", p.display()),
+                            Err(e) => format!("Thumbnail: {e}"),
+                        },
+                    );
+                }
+                ui.add_enabled_ui(!running, |ui| {
+                    if ui
+                        .button("Record a 60 s Short (9:16)")
+                        .on_hover_text(
+                            "An upright video of the stage, for YouTube Shorts or TikTok",
+                        )
+                        .clicked()
+                    {
+                        self.record_short();
+                    }
+                });
+                if ui
+                    .button("Cut the last recording into 1 h, 3 h and 8 h videos")
+                    .clicked()
+                {
+                    self.cut_long_videos();
+                }
+                let cs = self
+                    .cut_status
+                    .lock()
+                    .map(|s| s.clone())
+                    .unwrap_or_default();
+                if !cs.is_empty() {
+                    ui.label(egui::RichText::new(cs).small());
+                }
+                if ui.button("Open the recordings folder").clicked() {
+                    let dir = crate::stream::recordings_dir();
+                    let _ = std::fs::create_dir_all(&dir);
+                    open_folder(&dir);
+                }
+            });
     }
 
     /// What the stage shows (for the window and the stream), saved.
@@ -1425,6 +1735,18 @@ fn looks_like_youtube_key(key: &str) -> bool {
         && groups
             .iter()
             .all(|g| !g.is_empty() && g.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+/// Opens a folder in the system's file manager.
+fn open_folder(dir: &std::path::Path) {
+    let cmd = if cfg!(windows) {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(cmd).arg(dir).spawn();
 }
 
 /// The recipe for an hour of the day (when the music follows the clock).

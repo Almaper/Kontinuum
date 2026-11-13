@@ -142,6 +142,8 @@ pub struct Overlay {
     pub notes: Vec<(i32, f64)>,
     /// What the chat last did: (text, when), e.g. "Ana chose Orbit".
     pub chat_event: Option<(String, f64)>,
+    /// No captions (for a thumbnail).
+    pub bare: bool,
 }
 
 impl Overlay {

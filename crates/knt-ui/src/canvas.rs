@@ -187,6 +187,11 @@ impl SkiaCanvas {
     }
 
     /// The pixels, RGBA (premultiplied; the stage's background is opaque, so it is plain RGBA).
+    /// Draws with another font from now on; gives back the one it had.
+    pub fn swap_font(&mut self, font: fontdue::Font) -> fontdue::Font {
+        std::mem::replace(&mut self.font, font)
+    }
+
     pub fn rgba(&self) -> &[u8] {
         self.pixmap.data()
     }

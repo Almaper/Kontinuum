@@ -21,6 +21,64 @@ use serde::{Deserialize, Serialize};
 
 use crate::canvas::SkiaCanvas;
 
+/// Another place to stream to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Destination {
+    pub name: String,
+    pub url: String,
+    pub key: String,
+    pub on: bool,
+}
+
+/// Streaming by the clock: every day from `start` to `stop` ("HH:MM", local time).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Schedule {
+    pub on: bool,
+    pub start: String,
+    pub stop: String,
+}
+
+impl Default for Schedule {
+    fn default() -> Self {
+        Schedule {
+            on: false,
+            start: "22:00".into(),
+            stop: "06:00".into(),
+        }
+    }
+}
+
+/// "HH:MM" in hours.
+pub fn parse_hm(s: &str) -> Option<f32> {
+    let (h, m) = s.trim().split_once(':')?;
+    let (h, m): (u32, u32) = (h.parse().ok()?, m.parse().ok()?);
+    (h < 24 && m < 60).then_some(h as f32 + m as f32 / 60.0)
+}
+
+impl Schedule {
+    /// Whether `hour` (0..24) is within the schedule (it may cross midnight).
+    pub fn within(&self, hour: f32) -> bool {
+        match (parse_hm(&self.start), parse_hm(&self.stop)) {
+            (Some(a), Some(b)) if a <= b => hour >= a && hour < b,
+            (Some(a), Some(b)) => hour >= a || hour < b,
+            _ => false,
+        }
+    }
+}
+
+/// The folder of the recordings (the user's Videos, else home).
+pub fn recordings_dir() -> PathBuf {
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let videos = home.join("Videos");
+    let base = if videos.is_dir() { videos } else { home };
+    base.join("Kontinuum")
+}
+
 /// The stream's settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -38,6 +96,12 @@ pub struct Config {
     pub ffmpeg: Option<PathBuf>,
     /// Upright video (9:16), for Shorts and phones.
     pub vertical: bool,
+    /// More places to stream to at the same time (Twitch, Kick…).
+    pub extra: Vec<Destination>,
+    /// Keep a copy of every stream in the recordings folder.
+    pub keep_copy: bool,
+    /// Start and stop by the clock.
+    pub schedule: Schedule,
     /// The language of the title, description and comment it writes for YouTube.
     pub lang: crate::promo::Lang,
 }
@@ -52,6 +116,22 @@ impl Default for Config {
             record: None,
             ffmpeg: None,
             vertical: false,
+            extra: vec![
+                Destination {
+                    name: "Twitch".into(),
+                    url: "rtmp://live.twitch.tv/app".into(),
+                    key: String::new(),
+                    on: false,
+                },
+                Destination {
+                    name: "Kick".into(),
+                    url: "rtmps://fa723fc1b171.global-contribute.live-video.net/app".into(),
+                    key: String::new(),
+                    on: false,
+                },
+            ],
+            keep_copy: false,
+            schedule: Schedule::default(),
             lang: crate::promo::Lang::default(),
         }
     }
@@ -118,7 +198,9 @@ impl Config {
         PathBuf::from(exe)
     }
 
-    /// Where the stream goes, for ffmpeg: the RTMP URL with the key, or the file.
+    /// Where the stream goes, for ffmpeg: the RTMP URL with the key, or the file; several
+    /// places at once through ffmpeg's tee (a failing one does not stop the others). Also what
+    /// to show of it (no keys).
     fn target(&self) -> Result<(Vec<String>, String), String> {
         if let Some(f) = &self.record {
             let fmt = match f
@@ -144,13 +226,64 @@ impl Config {
         if key.is_empty() {
             return Err("Paste your stream key (YouTube Studio > Go live > Stream).".into());
         }
+        let hide = |url: &str, key: &str| {
+            format!(
+                "{}/••••{}",
+                url.trim_end_matches('/'),
+                &key[key.len().saturating_sub(4)..]
+            )
+        };
         let url = format!("{}/{}", self.url.trim_end_matches('/'), key);
-        let shown = format!(
-            "{}/••••{}",
-            self.url.trim_end_matches('/'),
-            &key[key.len().saturating_sub(4)..]
-        );
-        Ok((vec!["-f".into(), "flv".into(), url], shown))
+        let mut outs = vec![(url, "flv".to_string())];
+        let mut shown = vec![hide(&self.url, key)];
+        for d in &self.extra {
+            let k = d.key.trim();
+            if d.on && !k.is_empty() && !d.url.trim().is_empty() {
+                outs.push((
+                    format!("{}/{}", d.url.trim().trim_end_matches('/'), k),
+                    "flv".into(),
+                ));
+                shown.push(format!("{} ({})", d.name, hide(&d.url, k)));
+            }
+        }
+        if self.keep_copy {
+            let dir = recordings_dir();
+            let _ = std::fs::create_dir_all(&dir);
+            let name = chrono::Local::now()
+                .format("Kontinuum live %Y-%m-%d %H-%M.mkv")
+                .to_string();
+            let f = dir.join(name);
+            shown.push(f.display().to_string());
+            // forward slashes: the tee reads a backslash as an escape (Windows takes both)
+            outs.push((
+                f.display().to_string().replace('\\', "/"),
+                "matroska".into(),
+            ));
+        }
+        if outs.len() == 1 {
+            let (url, _) = outs.remove(0);
+            return Ok((vec!["-f".into(), "flv".into(), url], shown.remove(0)));
+        }
+        // the tee: each output in brackets of options, separated by |
+        let tee = outs
+            .iter()
+            .map(|(u, f)| format!("[f={f}:onfail=ignore]{}", u.replace('|', "\\|")))
+            .collect::<Vec<_>>()
+            .join("|");
+        Ok((
+            vec![
+                "-map".into(),
+                "1:v".into(),
+                "-map".into(),
+                "0:a".into(),
+                "-flags".into(),
+                "+global_header".into(),
+                "-f".into(),
+                "tee".into(),
+                tee,
+            ],
+            shown.join("  +  "),
+        ))
     }
 }
 
@@ -516,6 +649,45 @@ mod tests {
 
     /// Records three seconds to a file with the system's ffmpeg (skipped without one): the
     /// audio callback is simulated by a thread that renders in real time.
+    #[test]
+    fn several_destinations_go_through_the_tee() {
+        let mut c = Config {
+            key: "abcd-1234-efgh-5678-ijkl".into(),
+            ..Config::default()
+        };
+        c.extra[0].on = true;
+        c.extra[0].key = "live_123".into();
+        let (args, shown) = c.target().unwrap();
+        assert_eq!(args[args.len() - 2], "tee");
+        let tee = args.last().unwrap();
+        assert!(tee.starts_with("[f=flv:onfail=ignore]rtmp://a.rtmp.youtube.com/live2/abcd"));
+        assert!(tee.contains("|[f=flv:onfail=ignore]rtmp://live.twitch.tv/app/live_123"));
+        assert!(!shown.contains("live_123") && !shown.contains("abcd-1234"));
+        // one destination: plain flv
+        c.extra[0].on = false;
+        let (args, _) = c.target().unwrap();
+        assert_eq!(args[0], "-f");
+        assert_eq!(args[1], "flv");
+    }
+
+    #[test]
+    fn schedules_cross_midnight() {
+        let s = Schedule {
+            on: true,
+            start: "22:00".into(),
+            stop: "06:30".into(),
+        };
+        assert!(s.within(23.0) && s.within(3.0) && !s.within(7.0) && !s.within(21.9));
+        let d = Schedule {
+            on: true,
+            start: "09:00".into(),
+            stop: "17:00".into(),
+        };
+        assert!(d.within(9.0) && !d.within(17.0));
+        assert_eq!(parse_hm("7:5"), Some(7.0 + 5.0 / 60.0));
+        assert_eq!(parse_hm("25:00"), None);
+    }
+
     #[test]
     fn records_a_file() {
         if Proc::new("ffmpeg").arg("-version").output().is_err() {
