@@ -28,6 +28,8 @@ pub struct Player {
     snapshot: triple_buffer::Output<Snapshot>,
     tap: Option<rtrb::Consumer<f32>>,
     midi: Option<rtrb::Producer<Command>>,
+    shared: std::sync::Arc<std::sync::Mutex<Snapshot>>,
+    tapping: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The callback side.
@@ -39,6 +41,8 @@ pub struct Audio {
     garbage: rtrb::Producer<Command>,
     snapshot: triple_buffer::Input<Snapshot>,
     tap: rtrb::Producer<f32>,
+    /// A copy of the snapshot for other threads (the live stream), updated when free.
+    shared: std::sync::Arc<std::sync::Mutex<Snapshot>>,
     /// Whether the tap is read (a stream runs): when not, it is not filled.
     tapping: std::sync::Arc<std::sync::atomic::AtomicBool>,
     output_errors: u64,
@@ -54,6 +58,7 @@ impl Player {
         let (tp, tc) = rtrb::RingBuffer::new(TAP);
         let tapping = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (mp, mc) = rtrb::RingBuffer::new(COMMANDS);
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(engine.snapshot()));
         (
             Player {
                 commands: cp,
@@ -61,6 +66,8 @@ impl Player {
                 snapshot: so,
                 tap: Some(tc),
                 midi: Some(mp),
+                shared: shared.clone(),
+                tapping: tapping.clone(),
             },
             Audio {
                 engine,
@@ -69,6 +76,7 @@ impl Player {
                 garbage: gp,
                 snapshot: si,
                 tap: tp,
+                shared,
                 tapping,
                 output_errors: 0,
                 since_publish: 0,
@@ -89,6 +97,16 @@ impl Player {
     /// The latest state.
     pub fn snapshot(&mut self) -> &Snapshot {
         self.snapshot.read()
+    }
+
+    /// The snapshot for another thread (the live stream): the latest the callback could store.
+    pub fn shared_snapshot(&self) -> std::sync::Arc<std::sync::Mutex<Snapshot>> {
+        self.shared.clone()
+    }
+
+    /// The flag that turns the tap on.
+    pub fn tap_flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.tapping.clone()
     }
 
     /// The MIDI queue's sending end (once): for the MIDI input's thread. Only boxless commands
@@ -135,8 +153,13 @@ impl Audio {
         // the snapshot about 40 times a second
         if self.since_publish >= 1024 {
             self.since_publish = 0;
-            *self.snapshot.input_buffer_mut() = self.engine.snapshot();
+            let snap = self.engine.snapshot();
+            *self.snapshot.input_buffer_mut() = snap;
             self.snapshot.publish();
+            // never wait in the callback: when the stream's thread holds it, next time
+            if let Ok(mut s) = self.shared.try_lock() {
+                *s = snap;
+            }
         }
     }
 

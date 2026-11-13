@@ -13,6 +13,7 @@ use knt_player::Player;
 
 use crate::midi::{Map, Midi, Msg, Target};
 use crate::stage;
+use crate::stream::{Config, State, Stream};
 use crate::theme::{self, *};
 
 /// The design size of the window; the content scales to the window.
@@ -41,7 +42,7 @@ pub struct App {
     pub shot: Option<Shot>,
     /// What the window last read from the player.
     snap: Snapshot,
-    status: Option<String>,
+    pub status: Option<String>,
     pub midi: Midi,
     midi_map: Map,
     /// The control waiting for a controller to move (MIDI learn).
@@ -49,10 +50,30 @@ pub struct App {
     midi_open: bool,
     /// The last MIDI message, for the MIDI window, and when.
     midi_last: Option<(String, f64)>,
+    /// The live stream: its settings, the running one, and what it needs from the player.
+    stream_cfg: Config,
+    stream: Option<Stream>,
+    stream_open: bool,
+    tap: Option<rtrb::Consumer<f32>>,
+    tap_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    shared: Option<std::sync::Arc<std::sync::Mutex<Snapshot>>>,
+    stream_msg: Option<String>,
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        // ffmpeg ends cleanly (and a recording is finished) when the window closes
+        if let Some(s) = self.stream.take() {
+            s.stop();
+        }
+    }
 }
 
 impl App {
-    pub fn new(player: Option<Player>, seed: u64) -> Self {
+    pub fn new(mut player: Option<Player>, seed: u64) -> Self {
+        let tap = player.as_mut().and_then(|p| p.tap());
+        let tap_flag = player.as_ref().map(|p| p.tap_flag());
+        let shared = player.as_ref().map(|p| p.shared_snapshot());
         App {
             player,
             params: Params::default(),
@@ -71,6 +92,13 @@ impl App {
             learning: None,
             midi_open: false,
             midi_last: None,
+            stream_cfg: Config::load(),
+            stream: None,
+            stream_open: false,
+            tap,
+            tap_flag,
+            shared,
+            stream_msg: None,
         }
     }
 
@@ -164,13 +192,16 @@ impl App {
         let full = ctx.content_rect();
         if self.stage {
             let p = ui.painter_at(full);
-            stage::draw(
-                &p,
-                full,
-                &self.snap,
-                now,
-                CARTA[self.snap.recipe as usize % CARTA.len()].1,
-            );
+            p.rect_filled(full, 0.0, Color32::BLACK);
+            let w = full.width().min(full.height() * 16.0 / 9.0);
+            let r = Rect::from_center_size(full.center(), vec2(w, w * 9.0 / 16.0));
+            let mut cv = crate::canvas::EguiCanvas {
+                p: &p.with_clip_rect(r),
+                rect: r,
+            };
+            let badge = self.stream_badge();
+            stage::draw(&mut cv, &self.snap, now, badge.as_deref());
+            self.stream_window(&ctx);
             let r = ui.interact(full, egui::Id::unique("stage"), Sense::click());
             if r.double_clicked() {
                 self.stage = false;
@@ -204,7 +235,184 @@ impl App {
             );
         }
         self.midi_window(&ctx, now);
+        self.stream_window(&ctx);
         self.screenshot(&ctx);
+    }
+
+    /// The stage's badge while streaming or recording: "LIVE 0:12:03".
+    fn stream_badge(&self) -> Option<String> {
+        let st = self.stream.as_ref()?.status();
+        let rec = self.stream_cfg.record.is_some();
+        let label = if rec { "REC" } else { "LIVE" };
+        match st.state {
+            State::Live => {
+                let t = st.since.map_or(0, |s| s.elapsed().as_secs());
+                Some(format!(
+                    "{label}  {}:{:02}:{:02}",
+                    t / 3600,
+                    t / 60 % 60,
+                    t % 60
+                ))
+            }
+            State::Starting => Some(format!("{label}  connecting…")),
+            State::Retrying(_) => Some(format!("{label}  reconnecting…")),
+            _ => None,
+        }
+    }
+
+    pub fn go_live(&mut self) {
+        let (Some(tap), Some(flag), Some(shared)) =
+            (self.tap.take(), self.tap_flag.clone(), self.shared.clone())
+        else {
+            self.stream_msg = Some("There is no audio player to stream.".into());
+            return;
+        };
+        if self.stream_cfg.record.is_none() && self.stream_cfg.key.trim().is_empty() {
+            self.tap = Some(tap);
+            self.stream_msg = Some("Paste your stream key first.".into());
+            return;
+        }
+        if let Err(e) = self.stream_cfg.save() {
+            self.stream_msg = Some(format!("Settings not saved: {e}"));
+        }
+        if !self.playing {
+            self.set_playing(true);
+        }
+        self.stream = Some(Stream::start(self.stream_cfg.clone(), tap, flag, shared));
+    }
+
+    pub fn stop_stream(&mut self) {
+        if let Some(s) = self.stream.take() {
+            self.tap = s.stop();
+        }
+    }
+
+    /// The LIVE window: where to stream (the key), the quality, a recording instead, and the
+    /// stream's state.
+    fn stream_window(&mut self, ctx: &egui::Context) {
+        if !self.stream_open {
+            return;
+        }
+        // a stream that failed for good gives the tap back
+        if let Some(s) = &self.stream
+            && let State::Failed(e) = s.status().state
+        {
+            self.stream_msg = Some(e);
+            self.stop_stream();
+        }
+        let mut open = true;
+        let mut go = false;
+        let mut stop = false;
+        egui::Window::new("Go live")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_pos(pos2(700.0, 120.0))
+            .show(ctx, |ui| {
+                let running = self.stream.is_some();
+                ui.add_enabled_ui(!running, |ui| {
+                    let c = &mut self.stream_cfg;
+                    ui.label("Stream the stage and the music to YouTube, without OBS.");
+                    egui::Grid::new("stream_cfg").num_columns(2).show(ui, |ui| {
+                        ui.label("Stream key:");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut c.key)
+                                .password(true)
+                                .desired_width(260.0),
+                        )
+                        .on_hover_text("YouTube Studio > Go live > Stream > Stream key");
+                        ui.end_row();
+                        ui.label("Server:");
+                        ui.add(egui::TextEdit::singleline(&mut c.url).desired_width(260.0));
+                        ui.end_row();
+                        ui.label("Quality:");
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(&mut c.height, 720, "720p");
+                            ui.selectable_value(&mut c.height, 1080, "1080p");
+                            ui.label("30 fps");
+                        });
+                        ui.end_row();
+                        ui.label("Record instead:");
+                        let mut rec = c.record.is_some();
+                        if ui
+                            .checkbox(&mut rec, "to a file (to test, or to keep)")
+                            .changed()
+                        {
+                            c.record = rec.then(|| {
+                                let dir = std::env::var_os("USERPROFILE")
+                                    .or_else(|| std::env::var_os("HOME"))
+                                    .map(PathBuf::from)
+                                    .unwrap_or_else(|| PathBuf::from("."));
+                                dir.join("Kontinuum live.mkv")
+                            });
+                        }
+                        ui.end_row();
+                    });
+                    if let Some(r) = &self.stream_cfg.record {
+                        ui.label(egui::RichText::new(format!("File: {}", r.display())).small());
+                    }
+                });
+                ui.separator();
+                match &self.stream {
+                    None => {
+                        if ui
+                            .button(egui::RichText::new("● Go live").strong().color(RUST))
+                            .clicked()
+                        {
+                            go = true;
+                        }
+                    }
+                    Some(s) => {
+                        let st = s.status();
+                        let text = match &st.state {
+                            State::Starting => "Connecting…".to_string(),
+                            State::Live => format!(
+                                "ON AIR · {} · {} frames{}",
+                                self.stream_badge().unwrap_or_default(),
+                                st.frames,
+                                if st.restarts > 0 {
+                                    format!(" · {} reconnects", st.restarts)
+                                } else {
+                                    String::new()
+                                }
+                            ),
+                            State::Retrying(e) => format!("Reconnecting: {e}"),
+                            State::Failed(e) => format!("Failed: {e}"),
+                            State::Off => "Off".into(),
+                        };
+                        ui.colored_label(RUST, text);
+                        if !st.target.is_empty() {
+                            ui.label(egui::RichText::new(format!("To {}", st.target)).small());
+                        }
+                        if !st.log.is_empty() {
+                            ui.label(egui::RichText::new(format!("ffmpeg: {}", st.log)).small());
+                        }
+                        if ui.button("■ Stop").clicked() {
+                            stop = true;
+                        }
+                    }
+                }
+                if let Some(m) = &self.stream_msg {
+                    ui.colored_label(RUST, m);
+                }
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Uses ffmpeg ({}). The stream keeps going with the window minimized.",
+                        self.stream_cfg.ffmpeg().display()
+                    ))
+                    .small(),
+                );
+            });
+        if go {
+            self.stream_msg = None;
+            self.go_live();
+        }
+        if stop {
+            self.stop_stream();
+        }
+        if !open {
+            self.stream_open = false;
+        }
     }
 
     /// The MIDI window: the input port, the last message, and the controllers to learn.
@@ -415,6 +623,15 @@ impl App {
             let live = self.midi.port.is_some();
             if theme::button(ui, "MIDI", "♪", live || self.midi_open) {
                 self.midi_open = !self.midi_open;
+            }
+            let on_air = self.stream.is_some();
+            if theme::button(
+                ui,
+                if on_air { "ON AIR" } else { "LIVE" },
+                "●",
+                on_air || self.stream_open,
+            ) {
+                self.stream_open = !self.stream_open;
             }
         });
         let _ = now;

@@ -15,13 +15,18 @@ without repeating itself. You can also play along with a MIDI keyboard or pads.
 
 ## What is in it
 
-- **Six layers:**
+- **Seven layers:**
   - **drone:** long, low notes;
   - **pad:** slow chords;
   - **texture:** air and drops;
   - **bells:** sparse and distant;
   - **percussion:** a pulse that comes in only now and then;
-  - **choir:** synthesized voices that morph between vowels.
+  - **choir:** synthesized voices that morph between vowels;
+  - **modular:** Berlin-school sequences or low-pass-gate plucks.
+
+  Each section, the director picks two to four of them and a timbre for each (seven pads,
+  from PWM strings to a wavefolder; five drones, from a deep sine to a ladder filter), so the
+  music never sounds like the same piece for long.
 - **The director:** it composes in sections of a few chords and can change key, bring the pulse
   or the choir in and out, and drift through the Menu. Its automations are slow random walks,
   and you set how far they move with **Evolution**.
@@ -34,6 +39,14 @@ without repeating itself. You can also play along with a MIDI keyboard or pads.
   - **Relay:** the director rests while you play and takes over after a while without notes.
 - **The stage:** a full-screen 16:9 picture of what every layer and the director are doing,
   made to be streamed. F11 toggles it.
+- **Go live:** stream the stage and the music to YouTube by yourself, without OBS: paste the
+  stream key (YouTube Studio > Go live > Stream) in the LIVE window and press Go live. It
+  reconnects by itself and keeps going with the window minimized; it can also record to a
+  file. It uses [ffmpeg](https://ffmpeg.org): the Windows download includes it; on macOS
+  `brew install ffmpeg`, on Linux your package manager's.
+- **MIDI:** a keyboard plays the layer marked KEYS (Accompany, Solo or Relay), channel 10 or a
+  pad controller plays the percussion, and MIDI learn ties your knobs and faders to the
+  director's knobs and the layers' levels.
 - **Sleep timer** and **export** of long pieces to WAV, FLAC or Ogg.
 
 ## Command line
@@ -58,7 +71,6 @@ cargo test --workspace
 
 Planned next:
 
-- more timbres per layer (analog and modular synths, more pads) and per-section orchestration;
-- MIDI input with MIDI learn;
-- streaming the stage directly to YouTube, without OBS;
-- your own recipes.
+- your own recipes;
+- recording what you play as a song;
+- the music following the time of day.

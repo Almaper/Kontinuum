@@ -7,8 +7,10 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod canvas;
 mod midi;
 mod stage;
+mod stream;
 mod theme;
 
 use std::path::PathBuf;
@@ -18,6 +20,8 @@ use knt_engine::{CARTA, Params};
 
 struct Kontinuum {
     app: app::App,
+    /// The audio output: it plays as long as it is kept (the app's whole life).
+    _audio: Option<knt_player::output::Stream>,
 }
 
 impl eframe::App for Kontinuum {
@@ -37,6 +41,7 @@ fn main() -> eframe::Result {
     let mut size = [app::W, app::H];
     let mut shot: Option<PathBuf> = None;
     let mut warmup = 0u32;
+    let mut shot_frames = 12u32;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -52,6 +57,8 @@ fn main() -> eframe::Result {
             "--screenshot" => shot = args.next().map(PathBuf::from),
             // seconds of music before the screenshot
             "--warmup" => warmup = args.next().and_then(|v| v.parse().ok()).unwrap_or(0),
+            // frames before the screenshot (about 30 a second)
+            "--shot-frames" => shot_frames = args.next().and_then(|v| v.parse().ok()).unwrap_or(12),
             _ => {
                 eprintln!(
                     "usage: Kontinuum [--seed N] [--recipe 0..{}] [--play] [--stage] \
@@ -73,14 +80,24 @@ fn main() -> eframe::Result {
             audio.render_f32(&mut buf);
         }
     }
+    let mut audio_error = None;
     let stream = match knt_player::output::start(audio) {
-        Ok(s) => Some(s),
+        Ok(s) => {
+            eprintln!(
+                "Kontinuum: audio on {} ({} Hz{})",
+                s.device,
+                s.config.sample_rate,
+                if s.resampled { ", resampled" } else { "" }
+            );
+            Some(s)
+        }
         Err(e) => {
             eprintln!("Kontinuum: audio output: {e}; running without sound");
+            audio_error = Some(format!("No sound: the audio output did not start ({e})."));
             None
         }
     };
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Kontinuum")
             .with_app_id("Kontinuum")
@@ -88,17 +105,27 @@ fn main() -> eframe::Result {
             .with_min_inner_size([640.0, 400.0]),
         ..Default::default()
     };
+    // DirectX 12 on Windows (Intel's Vulkan driver crashes at startup, as OpenRB-338 found);
+    // WGPU_BACKEND chooses another
+    let mut setup = eframe::egui_wgpu::WgpuSetupCreateNew::without_display_handle();
+    setup.instance_descriptor.backends =
+        eframe::egui_wgpu::wgpu::Backends::from_env().unwrap_or(if cfg!(windows) {
+            eframe::egui_wgpu::wgpu::Backends::DX12
+        } else {
+            eframe::egui_wgpu::wgpu::Backends::PRIMARY | eframe::egui_wgpu::wgpu::Backends::GL
+        });
+    options.wgpu_options.wgpu_setup = eframe::egui_wgpu::WgpuSetup::CreateNew(setup);
     eframe::run_native(
         "Kontinuum",
         options,
         Box::new(move |cc| {
             theme::install(&cc.egui_ctx);
-            let _keep = &stream;
             let notes = player.midi_sender();
             let mut a = app::App::new(Some(player), seed);
             a.midi = midi::Midi::new(notes);
             a.midi.connect_first();
             a.recipe = recipe;
+            a.status = audio_error;
             if play || warmup > 0 {
                 a.set_playing(true);
             }
@@ -106,9 +133,12 @@ fn main() -> eframe::Result {
             a.shot = shot.map(|path| app::Shot {
                 path,
                 frames: 0,
-                after: 12,
+                after: shot_frames,
             });
-            Ok(Box::new(Kontinuum { app: a }))
+            Ok(Box::new(Kontinuum {
+                app: a,
+                _audio: stream,
+            }))
         }),
     )
 }

@@ -299,6 +299,16 @@ pub fn button(ui: &mut Ui, label: &str, icon: &str, lit: bool) -> bool {
 /// The italic-KNT wordmark, stroked (the logo of tools/logo.py), `h` high at `at` (top left);
 /// returns its width.
 pub fn wordmark(p: &Painter, at: Pos2, h: f32, color: Color32) -> f32 {
+    let (lines, w, width) = wordmark_lines(at, h);
+    for l in lines {
+        p.add(Shape::line(l, Stroke::new(width, color)));
+    }
+    w
+}
+
+/// The wordmark's strokes: polylines, the total width and the stroke width.
+pub fn wordmark_lines(at: Pos2, h: f32) -> (Vec<Vec<Pos2>>, f32, f32) {
+    let mut out: Vec<Vec<Pos2>> = Vec::new();
     let s = h / 140.0;
     let word: [(char, f32, bool); 9] = [
         ('K', 92.0, true),
@@ -311,7 +321,6 @@ pub fn wordmark(p: &Painter, at: Pos2, h: f32, color: Color32) -> f32 {
         ('U', 90.0, false),
         ('M', 104.0, false),
     ];
-    let stroke = Stroke::new((10.0 * s).max(1.5), color);
     let mut x = 0.0;
     for (ch, w, italic) in word {
         let slant = |px: f32, py: f32| -> Pos2 {
@@ -323,14 +332,13 @@ pub fn wordmark(p: &Painter, at: Pos2, h: f32, color: Color32) -> f32 {
             };
             pos2(at.x + (x + px + dx) * s, at.y + py * s)
         };
-        let line = |pts: &[(f32, f32)]| {
-            Shape::line(pts.iter().map(|&(a, b)| slant(a, b)).collect(), stroke)
-        };
+        let line =
+            |pts: &[(f32, f32)]| -> Vec<Pos2> { pts.iter().map(|&(a, b)| slant(a, b)).collect() };
         match ch {
             'K' => {
-                p.add(line(&[(0.0, 0.0), (0.0, 140.0)]));
-                p.add(line(&[(w, 0.0), (6.0, 78.4)]));
-                p.add(line(&[(w * 0.3, 56.0), (w, 140.0)]));
+                out.push(line(&[(0.0, 0.0), (0.0, 140.0)]));
+                out.push(line(&[(w, 0.0), (6.0, 78.4)]));
+                out.push(line(&[(w * 0.3, 56.0), (w, 140.0)]));
             }
             'O' => {
                 let pts: Vec<(f32, f32)> = (0..=48)
@@ -339,17 +347,17 @@ pub fn wordmark(p: &Painter, at: Pos2, h: f32, color: Color32) -> f32 {
                         (w / 2.0 + a.cos() * w / 2.0, 70.0 + a.sin() * 70.0)
                     })
                     .collect();
-                p.add(line(&pts));
+                out.push(line(&pts));
             }
             'N' => {
-                p.add(line(&[(0.0, 140.0), (0.0, 0.0), (w, 140.0), (w, 0.0)]));
+                out.push(line(&[(0.0, 140.0), (0.0, 0.0), (w, 140.0), (w, 0.0)]));
             }
             'T' => {
-                p.add(line(&[(0.0, 0.0), (w, 0.0)]));
-                p.add(line(&[(w / 2.0, 0.0), (w / 2.0, 140.0)]));
+                out.push(line(&[(0.0, 0.0), (w, 0.0)]));
+                out.push(line(&[(w / 2.0, 0.0), (w / 2.0, 140.0)]));
             }
             'I' => {
-                p.add(line(&[(w / 2.0, 0.0), (w / 2.0, 140.0)]));
+                out.push(line(&[(w / 2.0, 0.0), (w / 2.0, 140.0)]));
             }
             'U' => {
                 let r = w / 2.0;
@@ -359,10 +367,10 @@ pub fn wordmark(p: &Painter, at: Pos2, h: f32, color: Color32) -> f32 {
                     pts.push((r + a.cos() * r, 140.0 - r + a.sin() * r));
                 }
                 pts.push((w, 0.0));
-                p.add(line(&pts));
+                out.push(line(&pts));
             }
             'M' => {
-                p.add(line(&[
+                out.push(line(&[
                     (0.0, 140.0),
                     (0.0, 0.0),
                     (w / 2.0, 86.8),
@@ -374,7 +382,7 @@ pub fn wordmark(p: &Painter, at: Pos2, h: f32, color: Color32) -> f32 {
         }
         x += w + 38.0;
     }
-    (x - 38.0) * s
+    (out, (x - 38.0) * s, (10.0 * s).max(1.5))
 }
 
 /// A small helper: a rect from its left top and size.
