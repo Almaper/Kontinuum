@@ -303,9 +303,8 @@ fn session(
         "-loglevel",
         "warning",
         // the audio first: ffmpeg opens its inputs in order, and connects to the socket at
-        // once, while the raw video on its standard input would wait for data
-        "-thread_queue_size",
-        "1024",
+        // once, while the raw video on its standard input would wait for data (no
+        // -thread_queue_size: recent ffmpeg refuses it on inputs)
         // raw inputs: nothing to probe (by default ffmpeg would read seconds of audio before
         // it opens the video, and both pipes would wait for each other)
         "-probesize",
@@ -320,8 +319,6 @@ fn session(
         "2",
         "-i",
         &format!("tcp://127.0.0.1:{port}"),
-        "-thread_queue_size",
-        "1024",
         "-probesize",
         "32",
         "-analyzeduration",
