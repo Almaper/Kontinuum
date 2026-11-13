@@ -14,6 +14,9 @@ pub trait Canvas {
     fn ring(&mut self, c: Pos2, r: f32, width: f32, color: Color32);
     fn line(&mut self, pts: &[Pos2], width: f32, color: Color32);
     fn text(&mut self, at: Pos2, align: Align2, text: &str, size: f32, color: Color32);
+    /// Soft clouds of color (center, radius, color at the center): fading to nothing at the
+    /// radius.
+    fn clouds(&mut self, clouds: &[(Pos2, f32, Color32)]);
 }
 
 /// The window's painter, over `rect`.
@@ -63,6 +66,25 @@ impl Canvas for EguiCanvas<'_> {
         self.p
             .text(self.at(at), align, text, FontId::proportional(size), color);
     }
+
+    /// A triangle fan per cloud: the color at the center, transparent at the edge (the GPU
+    /// blends it smoothly).
+    fn clouds(&mut self, clouds: &[(Pos2, f32, Color32)]) {
+        for &(c, r, col) in clouds {
+            let mut m = egui::Mesh::default();
+            let c = self.at(c);
+            m.colored_vertex(c, col);
+            let n = 48;
+            for k in 0..=n {
+                let a = k as f32 / n as f32 * std::f32::consts::TAU;
+                m.colored_vertex(c + egui::vec2(a.cos(), a.sin()) * r, Color32::TRANSPARENT);
+            }
+            for k in 0..n {
+                m.add_triangle(0, k + 1, k + 2);
+            }
+            self.p.add(Shape::mesh(m));
+        }
+    }
 }
 
 /// A software canvas: an RGBA pixmap.
@@ -71,6 +93,10 @@ pub struct SkiaCanvas {
     font: fontdue::Font,
     /// The last background and its colors: a gradient is drawn once and copied after.
     background: Option<((Color32, Color32), Vec<u8>)>,
+    /// The background with its clouds, and the frames since it was drawn: the clouds move
+    /// slowly, so they are drawn again only every few frames.
+    clouded: Option<Vec<u8>>,
+    clouded_age: u32,
 }
 
 fn paint(c: Color32) -> tiny_skia::Paint<'static> {
@@ -92,6 +118,8 @@ impl SkiaCanvas {
             pixmap: tiny_skia::Pixmap::new(w, h).expect("a pixmap"),
             font,
             background: None,
+            clouded: None,
+            clouded_age: 0,
         }
     }
 
@@ -137,6 +165,69 @@ impl Canvas for SkiaCanvas {
                 .fill_rect(r, &p, tiny_skia::Transform::identity(), None);
         }
         self.background = Some(((top, bottom), self.pixmap.data().to_vec()));
+    }
+
+    /// The clouds drawn at an eighth of the size and scaled up smoothly: soft and cheap.
+    fn clouds(&mut self, clouds: &[(Pos2, f32, Color32)]) {
+        // drawn five times a second, copied in between
+        if self.clouded_age < 6
+            && let Some(c) = &self.clouded
+        {
+            self.pixmap.data_mut().copy_from_slice(c);
+            self.clouded_age += 1;
+            return;
+        }
+        let (w, h) = (self.pixmap.width(), self.pixmap.height());
+        let (sw, sh) = ((w / 8).max(1), (h / 8).max(1));
+        let Some(mut small) = tiny_skia::Pixmap::new(sw, sh) else {
+            return;
+        };
+        for &(c, r, col) in clouds {
+            let [cr, cg, cb, ca] = col.to_srgba_unmultiplied();
+            let (cx, cy, rr) = (c.x / 8.0, c.y / 8.0, r / 8.0);
+            let shader = tiny_skia::RadialGradient::new(
+                tiny_skia::Point::from_xy(cx, cy),
+                tiny_skia::Point::from_xy(cx, cy),
+                rr,
+                vec![
+                    tiny_skia::GradientStop::new(0.0, tiny_skia::Color::from_rgba8(cr, cg, cb, ca)),
+                    tiny_skia::GradientStop::new(1.0, tiny_skia::Color::from_rgba8(cr, cg, cb, 0)),
+                ],
+                tiny_skia::SpreadMode::Pad,
+                tiny_skia::Transform::identity(),
+            );
+            let (Some(shader), Some(path)) =
+                (shader, tiny_skia::PathBuilder::from_circle(cx, cy, rr))
+            else {
+                continue;
+            };
+            let p = tiny_skia::Paint {
+                shader,
+                anti_alias: true,
+                ..Default::default()
+            };
+            small.fill_path(
+                &path,
+                &p,
+                tiny_skia::FillRule::Winding,
+                tiny_skia::Transform::identity(),
+                None,
+            );
+        }
+        let pp = tiny_skia::PixmapPaint {
+            quality: tiny_skia::FilterQuality::Bilinear,
+            ..Default::default()
+        };
+        self.pixmap.draw_pixmap(
+            0,
+            0,
+            small.as_ref(),
+            &pp,
+            tiny_skia::Transform::from_scale(w as f32 / sw as f32, h as f32 / sh as f32),
+            None,
+        );
+        self.clouded = Some(self.pixmap.data().to_vec());
+        self.clouded_age = 0;
     }
 
     fn circle(&mut self, c: Pos2, r: f32, color: Color32) {

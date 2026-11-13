@@ -419,6 +419,7 @@ fn session(
     let mut buf: Vec<f32> = Vec::with_capacity(per_frame * 4);
     let mut bytes: Vec<u8> = Vec::with_capacity(per_frame * 4);
     let mut frames = 0u64;
+    let mut vis = crate::stage::Visual::default();
     let mut quiet = Instant::now();
     let result = loop {
         if stop.load(Ordering::SeqCst) {
@@ -449,16 +450,18 @@ fn session(
         if let Err(e) = audio.write_all(&bytes) {
             break Err(format!("the connection dropped: {e}"));
         }
+        // the picture's clock: one frame of time per frame (smooth, whatever the snapshots)
+        let snap = snapshot.lock().map(|s| *s).unwrap_or_default();
+        vis.update(&snap, frames as f64 / fps as f64);
         // drawing falls behind the sound (a slow computer): the last picture again, so the
         // stream keeps real time
         if buf.len() < 2 * per_frame {
-            let snap = snapshot.lock().map(|s| *s).unwrap_or_default();
             let badge = if config.record.is_some() {
                 "REC"
             } else {
                 "LIVE"
             };
-            crate::stage::draw(canvas, &snap, snap.time, Some(badge));
+            crate::stage::draw(canvas, &snap, &vis, Some(badge));
         }
         if let Err(e) = video.write_all(canvas.rgba()) {
             break Err(format!("the connection dropped: {e}"));
@@ -589,8 +592,10 @@ mod speed {
             ..Default::default()
         };
         let t = Instant::now();
+        let mut vis = crate::stage::Visual::default();
         for k in 0..20 {
-            crate::stage::draw(&mut c, &s, k as f64 * 0.033, Some("LIVE"));
+            vis.update(&s, k as f64 * 0.033);
+            crate::stage::draw(&mut c, &s, &vis, Some("LIVE"));
         }
         eprintln!(
             "stage frame: {:.1} ms",

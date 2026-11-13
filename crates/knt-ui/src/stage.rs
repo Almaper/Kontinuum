@@ -17,7 +17,61 @@ use knt_engine::{CARTA, Snapshot, note_name};
 
 use crate::app::event_text;
 use crate::canvas::Canvas;
-use crate::theme::lerp;
+use crate::theme::{hsv, hue, lerp};
+
+/// What the picture shows, smoothed frame by frame: the snapshot comes some 40 times a second
+/// and jumps; the picture glides. One per view (the window's stage, the stream).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Visual {
+    /// The picture's own clock, seconds.
+    pub t: f64,
+    pub levels: [f32; knt_engine::LAYERS],
+    pub drone_bright: f32,
+    /// The color wheel's turn, degrees: the key's root and the chord move it slowly.
+    pub hue: f32,
+    last: Option<f64>,
+}
+
+impl Visual {
+    /// Moves toward `s`; `now` is the view's clock (seconds).
+    pub fn update(&mut self, s: &Snapshot, now: f64) {
+        let dt = self.last.map_or(0.0, |l| (now - l).clamp(0.0, 0.25)) as f32;
+        self.last = Some(now);
+        self.t += dt as f64;
+        let k = 1.0 - (-dt / 0.35).exp();
+        for (i, v) in self.levels.iter_mut().enumerate() {
+            let target = (s.levels[i] * s.gains[i].max(0.0) * 12.0).sqrt().min(1.0);
+            *v += (target - *v) * k;
+        }
+        let b = (s.drone_cutoff / 2500.0).clamp(0.15, 1.0);
+        self.drone_bright += (b - self.drone_bright) * k;
+        // the chord's root turns the wheel (a fifth up: 30 degrees), very slowly
+        let root = s.chord.bass().unwrap_or(s.root);
+        // within about ±25 degrees of the recipe's colors
+        let target = (root.rem_euclid(12) as f32 * 7.0 * 7.0).rem_euclid(84.0) * 0.6 - 25.0;
+        let mut d = (target - self.hue).rem_euclid(360.0);
+        if d > 180.0 {
+            d -= 360.0;
+        }
+        self.hue += d * (1.0 - (-dt / 6.0).exp());
+    }
+}
+
+/// The color of a layer: around the recipe's main hue, each layer its own, all turned by the
+/// chord (`vis.hue`).
+pub fn layer_color(recipe: &knt_engine::Recipe, layer: usize, turn: f32) -> Color32 {
+    let base = hue(rgb(recipe.palette[1]));
+    let (dh, s, v) = [
+        (0.0, 0.6, 0.95),   // drone
+        (25.0, 0.5, 1.0),   // pad
+        (-30.0, 0.4, 0.95), // texture
+        (55.0, 0.45, 1.0),  // bells
+        (-15.0, 0.7, 0.95), // percussion
+        (-60.0, 0.35, 1.0), // choir
+        (80.0, 0.55, 1.0),  // modular
+    ][layer.min(6)];
+    hsv(base + dh + turn, s, v)
+}
 
 fn rgb(c: [u8; 3]) -> Color32 {
     Color32::from_rgb(c[0], c[1], c[2])
@@ -33,14 +87,28 @@ fn hash(mut x: u32) -> f32 {
 }
 
 /// Draws the stage over the whole canvas (which should be 16:9). `live`: the streaming badge.
-pub fn draw(cv: &mut dyn Canvas, s: &Snapshot, now: f64, live: Option<&str>) {
+pub fn draw(cv: &mut dyn Canvas, s: &Snapshot, vis: &Visual, live: Option<&str>) {
     let (w, h) = cv.size();
     let u = w / 1920.0;
-    let t = now as f32;
+    let t = vis.t as f32;
     let recipe = CARTA[s.recipe as usize % CARTA.len()].1;
     let [bg, main, accent] = recipe.palette.map(rgb);
     cv.background(bg, lerp(bg, main, 0.25));
-    let lv = |i: usize| (s.levels[i] * s.gains[i].max(0.0) * 12.0).sqrt().min(1.0);
+    let lv = |i: usize| vis.levels[i];
+    let col = |i: usize| layer_color(&recipe, i, vis.hue);
+    // the aurora: three soft clouds of the drone's, the pad's and the choir's colors, drifting
+    let mut clouds = [(Pos2::ZERO, 0.0f32, Color32::TRANSPARENT); 3];
+    for (k, &i) in [0usize, 1, 5].iter().enumerate() {
+        let a = 0.04 + 0.12 * lv(i);
+        let kf = k as f32;
+        let c = pos2(
+            w * (0.5 + 0.35 * (t * (0.013 + 0.004 * kf) + kf * 2.1).sin()),
+            h * (0.45 + 0.2 * (t * (0.017 + 0.003 * kf) + kf * 1.3).cos()),
+        );
+        let r = h * (0.45 + 0.1 * (t * 0.05 + kf).sin());
+        clouds[k] = (c, r, col(i).gamma_multiply(a * 1.6));
+    }
+    cv.clouds(&clouds);
     // the choir: veils
     let choir = lv(5);
     if choir > 0.01 {
@@ -53,7 +121,7 @@ pub fn draw(cv: &mut dyn Canvas, s: &Snapshot, now: f64, live: Option<&str>) {
                     pos2(x, y)
                 })
                 .collect();
-            cv.line(&pts, 30.0 * u, accent.gamma_multiply(0.05 * choir));
+            cv.line(&pts, 30.0 * u, col(5).gamma_multiply(0.08 * choir));
         }
     }
     // the texture: mist
@@ -63,15 +131,16 @@ pub fn draw(cv: &mut dyn Canvas, s: &Snapshot, now: f64, live: Option<&str>) {
         let x = (hash(i) + t * 0.004 * (0.5 + hash(i + 7))).fract();
         let y = (hash(i + 99) + (t * 0.3 + i as f32).sin() * 0.01).fract();
         let a = 0.08 + 0.35 * mist * hash(i + 3);
+        let c = if hash(i + 11) < 0.5 { accent } else { col(2) };
         cv.circle(
             pos2(x * w, y * h),
             (1.0 + 2.5 * hash(i + 5)) * u,
-            accent.gamma_multiply(a),
+            c.gamma_multiply(a),
         );
     }
     // the drone: the horizon
     let drone = lv(0);
-    let bright = (s.drone_cutoff / 2500.0).clamp(0.15, 1.0);
+    let bright = vis.drone_bright;
     for k in 0..5 {
         let base = h * (0.88 - 0.04 * k as f32);
         let pts: Vec<Pos2> = (0..=120)
@@ -85,7 +154,8 @@ pub fn draw(cv: &mut dyn Canvas, s: &Snapshot, now: f64, live: Option<&str>) {
         cv.line(
             &pts,
             (2.5 - k as f32 * 0.3) * u,
-            main.gamma_multiply(bright * (0.9 - 0.15 * k as f32) * (0.3 + 0.7 * drone)),
+            lerp(main, col(0), 0.6)
+                .gamma_multiply(bright * (0.9 - 0.15 * k as f32) * (0.3 + 0.7 * drone)),
         );
     }
     // the pad: orbs
@@ -101,7 +171,7 @@ pub fn draw(cv: &mut dyn Canvas, s: &Snapshot, now: f64, live: Option<&str>) {
                 cv.circle(
                     pos2(x, y),
                     rad * (2.0 - g as f32 * 0.6),
-                    main.gamma_multiply(0.07 + 0.08 * g as f32 * (0.4 + pad)),
+                    col(1).gamma_multiply(0.07 + 0.08 * g as f32 * (0.4 + pad)),
                 );
             }
             cv.circle(
@@ -126,9 +196,9 @@ pub fn draw(cv: &mut dyn Canvas, s: &Snapshot, now: f64, live: Option<&str>) {
             let a = (1.0 - age / 8.0).powi(2);
             for k in 0..3 {
                 let rad = (8.0 + age * 45.0 - k as f32 * 18.0).max(0.0) * u;
-                cv.ring(pos2(x, y), rad, 2.0 * u, accent.gamma_multiply(a * 0.8));
+                cv.ring(pos2(x, y), rad, 2.0 * u, col(3).gamma_multiply(a * 0.8));
             }
-            cv.circle(pos2(x, y), 4.0 * u, accent.gamma_multiply(a));
+            cv.circle(pos2(x, y), 4.0 * u, col(3).gamma_multiply(a));
         }
     }
     // the modular: a row of steps that light as it plays
@@ -142,7 +212,7 @@ pub fn draw(cv: &mut dyn Canvas, s: &Snapshot, now: f64, live: Option<&str>) {
             cv.circle(
                 pos2(x, h * 0.58),
                 (if on { 7.0 } else { 3.0 }) * u,
-                accent.gamma_multiply(a),
+                col(6).gamma_multiply(a),
             );
         }
     }
@@ -154,9 +224,9 @@ pub fn draw(cv: &mut dyn Canvas, s: &Snapshot, now: f64, live: Option<&str>) {
             c,
             (40.0 + 200.0 * perc) * u,
             3.0 * u,
-            main.gamma_multiply(0.5 * perc),
+            col(4).gamma_multiply(0.5 * perc),
         );
-        cv.circle(c, (6.0 + 14.0 * perc) * u, accent.gamma_multiply(perc));
+        cv.circle(c, (6.0 + 14.0 * perc) * u, col(4).gamma_multiply(perc));
     }
     // the captions
     let cream = Color32::from_rgb(0xef, 0xe3, 0xc8);
@@ -190,7 +260,12 @@ pub fn draw(cv: &mut dyn Canvas, s: &Snapshot, now: f64, live: Option<&str>) {
                 Align2::RIGHT_TOP,
                 &format!("{} · {}", l.name(), s.patches[i]),
                 17.0 * u,
-                cream.gamma_multiply(0.4),
+                cream.gamma_multiply(0.45),
+            );
+            cv.circle(
+                pos2(w - 48.0 * u, y + 10.0 * u),
+                4.0 * u,
+                col(i).gamma_multiply(0.4 + 0.6 * lv(i)),
             );
             y += 24.0 * u;
         }

@@ -134,6 +134,43 @@ pub fn lamp(p: &Painter, c: Pos2, on: f32) {
     p.circle_stroke(c, 5.0, Stroke::new(1.0, WALNUT_DARK));
 }
 
+/// A color from hue (degrees), saturation and value (0..1).
+pub fn hsv(h: f32, s: f32, v: f32) -> Color32 {
+    let h = h.rem_euclid(360.0) / 60.0;
+    let c = v * s;
+    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+    let (r, g, b) = match h as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = v - c;
+    let f = |u: f32| ((u + m).clamp(0.0, 1.0) * 255.0) as u8;
+    Color32::from_rgb(f(r), f(g), f(b))
+}
+
+/// The hue of a color, degrees.
+pub fn hue(c: Color32) -> f32 {
+    let (r, g, b) = (c.r() as f32, c.g() as f32, c.b() as f32);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    if d == 0.0 {
+        return 30.0;
+    }
+    let h = if max == r {
+        (g - b) / d % 6.0
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    (h * 60.0).rem_euclid(360.0)
+}
+
 pub fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
     let t = t.clamp(0.0, 1.0);
     let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;

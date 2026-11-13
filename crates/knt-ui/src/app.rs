@@ -58,6 +58,8 @@ pub struct App {
     tap_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     shared: Option<std::sync::Arc<std::sync::Mutex<Snapshot>>>,
     stream_msg: Option<String>,
+    /// The smoothed picture state, for the stage and the layers' windows.
+    visual: stage::Visual,
 }
 
 impl Drop for App {
@@ -99,6 +101,7 @@ impl App {
             tap_flag,
             shared,
             stream_msg: None,
+            visual: stage::Visual::default(),
         }
     }
 
@@ -181,7 +184,13 @@ impl App {
         let ctx = ui.ctx().clone();
         let now = ctx.input(|i| i.time);
         self.sync(now);
-        ctx.request_repaint_after(std::time::Duration::from_millis(33));
+        // fluid while the music plays (every screen refresh); idle, a few times a second
+        if self.playing || self.stage {
+            ctx.request_repaint();
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        self.visual.update(&self.snap, now);
         if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
             let on = !self.playing;
             self.set_playing(on);
@@ -200,7 +209,8 @@ impl App {
                 rect: r,
             };
             let badge = self.stream_badge();
-            stage::draw(&mut cv, &self.snap, now, badge.as_deref());
+            self.visual.update(&self.snap, now);
+            stage::draw(&mut cv, &self.snap, &self.visual, badge.as_deref());
             self.stream_window(&ctx);
             let r = ui.interact(full, egui::Id::unique("stage"), Sense::click());
             if r.double_clicked() {
@@ -531,7 +541,7 @@ impl App {
             INK_SOFT,
         );
         // the display
-        let d = Rect::from_min_size(pos2(r.left() + 330.0, r.top() + 12.0), vec2(520.0, 80.0));
+        let d = Rect::from_min_size(pos2(r.left() + 320.0, r.top() + 12.0), vec2(440.0, 80.0));
         display(&p, d);
         let s = &self.snap;
         let dish = CARTA[s.recipe as usize % CARTA.len()].0;
@@ -819,8 +829,9 @@ impl App {
         let s = &self.snap;
         let t = now as f32;
         let i = Layer::ALL.iter().position(|&l| l == layer).unwrap_or(0);
-        let lvl = (s.levels[i] * 10.0).sqrt().min(1.0);
-        let c = AMBER;
+        let lvl = self.visual.levels[i];
+        let recipe = CARTA[s.recipe as usize % CARTA.len()].1;
+        let c = stage::layer_color(&recipe, i, self.visual.hue);
         match layer {
             Layer::Drone => {
                 let bright = (s.drone_cutoff / 2000.0).clamp(0.1, 1.0);
