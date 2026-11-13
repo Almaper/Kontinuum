@@ -396,7 +396,7 @@ impl Engine {
 
     /// Fills `out` (interleaved stereo) with the music.
     pub fn render(&mut self, out: &mut [f32]) {
-        for f in out.chunks_exact_mut(2) {
+        for f in out.as_chunks_mut::<2>().0.iter_mut() {
             if self.pos == BLOCK {
                 self.block();
                 self.pos = 0;
