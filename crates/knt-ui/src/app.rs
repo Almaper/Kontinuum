@@ -296,6 +296,18 @@ impl App {
             self.stream_msg = Some("Paste your stream key first.".into());
             return;
         }
+        // no spaces in a key (a copy can bring some)
+        self.stream_cfg.key.retain(|c| !c.is_whitespace());
+        if self.stream_cfg.record.is_none()
+            && self.stream_cfg.url.contains("youtube")
+            && !looks_like_youtube_key(&self.stream_cfg.key)
+        {
+            self.stream_msg = Some(
+                "This does not look like a YouTube stream key (abcd-1234-efgh-5678-ijkl): \
+                 copy the key itself, not its name. Trying anyway."
+                    .into(),
+            );
+        }
         if let Err(e) = self.stream_cfg.save() {
             self.stream_msg = Some(format!("Settings not saved: {e}"));
         }
@@ -403,6 +415,23 @@ impl App {
                         ui.label("Server:");
                         ui.add(egui::TextEdit::singleline(&mut c.url).desired_width(260.0));
                         ui.end_row();
+                        ui.label("");
+                        ui.horizontal(|ui| {
+                            let (rtmp, rtmps) = (
+                                "rtmp://a.rtmp.youtube.com/live2",
+                                "rtmps://a.rtmps.youtube.com:443/live2",
+                            );
+                            ui.selectable_value(&mut c.url, rtmp.to_string(), "YouTube");
+                            ui.selectable_value(
+                                &mut c.url,
+                                rtmps.to_string(),
+                                "YouTube secure (RTMPS)",
+                            )
+                            .on_hover_text(
+                                "Try it when a firewall or the network blocks the normal one",
+                            );
+                        });
+                        ui.end_row();
                         ui.label("Quality:");
                         ui.horizontal(|ui| {
                             ui.selectable_value(&mut c.height, 720, "720p");
@@ -466,6 +495,18 @@ impl App {
                         }
                         if !st.log.is_empty() {
                             ui.label(egui::RichText::new(format!("ffmpeg: {}", st.log)).small());
+                        }
+                        if let State::Retrying(e) = &st.state
+                            && (e.contains("opening output") || e.contains("I/O error"))
+                        {
+                            ui.colored_label(
+                                RUST,
+                                "YouTube refused the connection. Check that the stream key is the \
+                                 key itself (YouTube Studio > Go live > Stream > Copy, it looks \
+                                 like abcd-1234-efgh-5678-ijkl), that live streaming is enabled \
+                                 on your channel (the first time it can take 24 hours), or try \
+                                 the secure server.",
+                            );
                         }
                         if ui.button("■ Stop").clicked() {
                             stop = true;
@@ -1282,4 +1323,23 @@ fn save_texts(p: &promo::Promo) -> Option<PathBuf> {
     );
     std::fs::write(&path, text).ok()?;
     Some(path)
+}
+
+/// Whether a stream key looks like YouTube's: groups of letters and digits joined by dashes.
+fn looks_like_youtube_key(key: &str) -> bool {
+    let groups: Vec<&str> = key.split('-').collect();
+    groups.len() >= 4
+        && groups
+            .iter()
+            .all(|g| !g.is_empty() && g.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+#[cfg(test)]
+mod key_tests {
+    #[test]
+    fn youtube_keys() {
+        assert!(super::looks_like_youtube_key("abcd-1234-efgh-5678-ijkl"));
+        assert!(!super::looks_like_youtube_key("Drift"));
+        assert!(!super::looks_like_youtube_key("my key-a-b-c"));
+    }
 }
