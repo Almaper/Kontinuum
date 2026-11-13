@@ -20,6 +20,9 @@ pub trait Canvas {
     /// The area under a line (`pts`, left to right) down to `base`: `top` at the line, `bottom`
     /// at the base.
     fn fill_below(&mut self, pts: &[Pos2], base: f32, top: Color32, bottom: Color32);
+    /// The camera: what is drawn next is zoomed by `zoom` around the center and moved by
+    /// `pan` (pixels). `(1.0, ZERO)` is no camera.
+    fn set_view(&mut self, zoom: f32, pan: egui::Vec2);
     /// The backdrop (what moves slowly: the sky, the clouds, the rays, the mountains) may be
     /// kept between frames: true when the canvas put back the last one, so it is not drawn.
     fn backdrop_kept(&mut self) -> bool {
@@ -33,11 +36,25 @@ pub trait Canvas {
 pub struct EguiCanvas<'a> {
     pub p: &'a Painter,
     pub rect: Rect,
+    /// The camera (see [`Canvas::set_view`]).
+    pub view: (f32, egui::Vec2),
+}
+
+impl<'a> EguiCanvas<'a> {
+    pub fn new(p: &'a Painter, rect: Rect) -> Self {
+        EguiCanvas {
+            p,
+            rect,
+            view: (1.0, egui::Vec2::ZERO),
+        }
+    }
 }
 
 impl EguiCanvas<'_> {
     fn at(&self, q: Pos2) -> Pos2 {
-        self.rect.min + q.to_vec2()
+        let c = self.rect.size() / 2.0;
+        let (z, pan) = self.view;
+        self.rect.min + (q.to_vec2() - c) * z + c + pan
     }
 }
 
@@ -59,22 +76,33 @@ impl Canvas for EguiCanvas<'_> {
     }
 
     fn circle(&mut self, c: Pos2, r: f32, color: Color32) {
-        self.p.circle_filled(self.at(c), r, color);
+        self.p.circle_filled(self.at(c), r * self.view.0, color);
     }
 
     fn ring(&mut self, c: Pos2, r: f32, width: f32, color: Color32) {
+        let z = self.view.0;
         self.p
-            .circle_stroke(self.at(c), r, Stroke::new(width, color));
+            .circle_stroke(self.at(c), r * z, Stroke::new(width * z, color));
     }
 
     fn line(&mut self, pts: &[Pos2], width: f32, color: Color32) {
         let pts: Vec<Pos2> = pts.iter().map(|&q| self.at(q)).collect();
-        self.p.add(Shape::line(pts, Stroke::new(width, color)));
+        self.p
+            .add(Shape::line(pts, Stroke::new(width * self.view.0, color)));
     }
 
     fn text(&mut self, at: Pos2, align: Align2, text: &str, size: f32, color: Color32) {
-        self.p
-            .text(self.at(at), align, text, FontId::proportional(size), color);
+        self.p.text(
+            self.at(at),
+            align,
+            text,
+            FontId::proportional(size * self.view.0),
+            color,
+        );
+    }
+
+    fn set_view(&mut self, zoom: f32, pan: egui::Vec2) {
+        self.view = (zoom, pan);
     }
 
     /// A triangle fan per cloud: the color at the center, transparent at the edge (the GPU
@@ -125,6 +153,9 @@ pub struct SkiaCanvas {
     /// the slowest.
     sky: Option<Vec<u8>>,
     sky_age: u32,
+    /// The camera, as a transform (see [`Canvas::set_view`]).
+    tf: tiny_skia::Transform,
+    zoom: f32,
 }
 
 fn paint(c: Color32) -> tiny_skia::Paint<'static> {
@@ -150,6 +181,8 @@ impl SkiaCanvas {
             clouded_age: 0,
             sky: None,
             sky_age: 0,
+            tf: tiny_skia::Transform::identity(),
+            zoom: 1.0,
         }
     }
 
@@ -293,8 +326,7 @@ impl Canvas for SkiaCanvas {
                 // no anti-aliasing: tiny-skia's anti-aliased hairlines assert on some specks
                 let mut p = paint(color);
                 p.anti_alias = false;
-                self.pixmap
-                    .fill_rect(rect, &p, tiny_skia::Transform::identity(), None);
+                self.pixmap.fill_rect(rect, &p, self.tf, None);
             }
             return;
         }
@@ -303,7 +335,7 @@ impl Canvas for SkiaCanvas {
                 &path,
                 &paint(color),
                 tiny_skia::FillRule::Winding,
-                tiny_skia::Transform::identity(),
+                self.tf,
                 None,
             );
         }
@@ -318,13 +350,8 @@ impl Canvas for SkiaCanvas {
                 width,
                 ..Default::default()
             };
-            self.pixmap.stroke_path(
-                &path,
-                &paint(color),
-                &stroke,
-                tiny_skia::Transform::identity(),
-                None,
-            );
+            self.pixmap
+                .stroke_path(&path, &paint(color), &stroke, self.tf, None);
         }
     }
 
@@ -344,13 +371,8 @@ impl Canvas for SkiaCanvas {
                 line_join: tiny_skia::LineJoin::Round,
                 ..Default::default()
             };
-            self.pixmap.stroke_path(
-                &path,
-                &paint(color),
-                &stroke,
-                tiny_skia::Transform::identity(),
-                None,
-            );
+            self.pixmap
+                .stroke_path(&path, &paint(color), &stroke, self.tf, None);
         }
     }
 
@@ -371,16 +393,23 @@ impl Canvas for SkiaCanvas {
         // one color, between the two (a gradient costs several times more in software)
         let c = crate::theme::lerp(top, bottom, 0.4);
         let p = paint(c);
-        self.pixmap.fill_path(
-            &path,
-            &p,
-            tiny_skia::FillRule::Winding,
-            tiny_skia::Transform::identity(),
-            None,
-        );
+        self.pixmap
+            .fill_path(&path, &p, tiny_skia::FillRule::Winding, self.tf, None);
+    }
+
+    fn set_view(&mut self, zoom: f32, pan: egui::Vec2) {
+        let (w, h) = self.size();
+        // about the center: move it to the origin, zoom, move back, then pan
+        self.tf = tiny_skia::Transform::from_translate(-w / 2.0, -h / 2.0)
+            .post_scale(zoom, zoom)
+            .post_translate(w / 2.0 + pan.x, h / 2.0 + pan.y);
+        self.zoom = zoom;
     }
 
     fn text(&mut self, at: Pos2, align: Align2, text: &str, size: f32, color: Color32) {
+        let mut q = tiny_skia::Point::from_xy(at.x, at.y);
+        self.tf.map_point(&mut q);
+        let (at, size) = (Pos2::new(q.x, q.y), size * self.zoom);
         // the bundled font has no ♯: a plain sharp sign
         let text = text.replace('♯', "#");
         let glyphs: Vec<(fontdue::Metrics, Vec<u8>)> = text

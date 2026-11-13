@@ -146,6 +146,8 @@ impl App {
         while let Ok(m) = self.midi.rx.try_recv() {
             let text = match m {
                 Msg::NoteOn { ch, note, vel } => {
+                    let at = crate::scene::clock();
+                    crate::scene::with_overlay(|o| o.notes.push((note as i32, at)));
                     format!(
                         "ch {} note {} {} vel {vel}",
                         ch + 1,
@@ -218,13 +220,17 @@ impl App {
             p.rect_filled(full, 0.0, Color32::BLACK);
             let w = full.width().min(full.height() * 16.0 / 9.0);
             let r = Rect::from_center_size(full.center(), vec2(w, w * 9.0 / 16.0));
-            let mut cv = crate::canvas::EguiCanvas {
-                p: &p.with_clip_rect(r),
-                rect: r,
-            };
+            let clipped = p.with_clip_rect(r);
+            let mut cv = crate::canvas::EguiCanvas::new(&clipped, r);
             let badge = self.stream_badge();
             self.visual.update(&self.snap, now);
-            stage::draw(&mut cv, &self.snap, &self.visual, badge.as_deref());
+            stage::draw(
+                &mut cv,
+                &self.snap,
+                &self.visual,
+                badge.as_deref(),
+                &crate::scene::overlay_now(),
+            );
             self.stream_window(&ctx);
             let r = ui.interact(full, egui::Id::unique("stage"), Sense::click());
             if r.double_clicked() {
@@ -460,6 +466,8 @@ impl App {
                     }
                 });
                 ui.separator();
+                self.stage_options_ui(ui);
+                ui.separator();
                 self.texts_ui(ui);
                 ui.separator();
                 match &self.stream {
@@ -534,6 +542,47 @@ impl App {
         if !open {
             self.stream_open = false;
         }
+    }
+
+    /// What the stage shows (for the window and the stream), saved.
+    fn stage_options_ui(&mut self, ui: &mut Ui) {
+        egui::CollapsingHeader::new("Stage")
+            .default_open(false)
+            .show(ui, |ui| {
+                let mut o = crate::scene::overlay_now().opts;
+                let before = o;
+                egui::Grid::new("stage_opts").num_columns(3).show(ui, |ui| {
+                    ui.checkbox(&mut o.day_night, "Day and night")
+                        .on_hover_text("The sky follows your clock: dawn, day, dusk, night");
+                    ui.checkbox(&mut o.lake, "Lake");
+                    ui.checkbox(&mut o.camera, "Moving camera");
+                    ui.end_row();
+                    ui.checkbox(&mut o.scenery, "Scenery")
+                        .on_hover_text("Each recipe's landscape: fog, a forest, a planet, arches…");
+                    ui.checkbox(&mut o.weather, "Weather");
+                    ui.checkbox(&mut o.seasons, "Seasons");
+                    ui.end_row();
+                    ui.checkbox(&mut o.window, "Cozy window").on_hover_text(
+                        "The stage seen through a rainy window, with a cup and a candle",
+                    );
+                    ui.checkbox(&mut o.mascot, "Lumo")
+                        .on_hover_text("The little lantern spirit on the hill");
+                    ui.checkbox(&mut o.constellation, "Seed constellation");
+                    ui.end_row();
+                });
+                if o != before {
+                    crate::scene::with_overlay(|ov| ov.opts = o);
+                    if let Err(e) = crate::scene::save("stage.toml", &o) {
+                        self.stream_msg = Some(format!("Stage options not saved: {e}"));
+                    }
+                }
+                ui.add_enabled_ui(self.stream.is_none(), |ui| {
+                    ui.checkbox(
+                        &mut self.stream_cfg.vertical,
+                        "Vertical video (9:16, for Shorts)",
+                    );
+                });
+            });
     }
 
     /// The texts for YouTube: the title, the description, the pinned comment and the tags, each

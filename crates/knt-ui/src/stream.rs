@@ -36,6 +36,8 @@ pub struct Config {
     pub record: Option<PathBuf>,
     /// ffmpeg's path (None: next to Kontinuum, else on the PATH).
     pub ffmpeg: Option<PathBuf>,
+    /// Upright video (9:16), for Shorts and phones.
+    pub vertical: bool,
     /// The language of the title, description and comment it writes for YouTube.
     pub lang: crate::promo::Lang,
 }
@@ -49,6 +51,7 @@ impl Default for Config {
             fps: 30,
             record: None,
             ffmpeg: None,
+            vertical: false,
             lang: crate::promo::Lang::default(),
         }
     }
@@ -80,11 +83,12 @@ impl Config {
     }
 
     pub fn size(&self) -> (u32, u32) {
-        if self.height >= 1080 {
+        let (w, h) = if self.height >= 1080 {
             (1920, 1080)
         } else {
             (1280, 720)
-        }
+        };
+        if self.vertical { (h, w) } else { (w, h) }
     }
 
     /// The video bitrate, kbit/s (YouTube's recommendations for 30 fps).
@@ -461,7 +465,13 @@ fn session(
             } else {
                 "LIVE"
             };
-            crate::stage::draw(canvas, &snap, &vis, Some(badge));
+            crate::stage::draw(
+                canvas,
+                &snap,
+                &vis,
+                Some(badge),
+                &crate::scene::overlay_now(),
+            );
         }
         if let Err(e) = video.write_all(canvas.rgba()) {
             break Err(format!("the connection dropped: {e}"));
@@ -595,7 +605,13 @@ mod speed {
         let mut vis = crate::stage::Visual::default();
         for k in 0..20 {
             vis.update(&s, k as f64 * 0.033);
-            crate::stage::draw(&mut c, &s, &vis, Some("LIVE"));
+            crate::stage::draw(
+                &mut c,
+                &s,
+                &vis,
+                Some("LIVE"),
+                &crate::scene::Overlay::default(),
+            );
         }
         eprintln!(
             "stage frame: {:.1} ms",

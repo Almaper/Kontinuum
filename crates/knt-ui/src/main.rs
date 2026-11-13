@@ -10,6 +10,7 @@ mod app;
 mod canvas;
 mod midi;
 mod promo;
+mod scene;
 mod stage;
 mod stream;
 mod theme;
