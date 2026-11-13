@@ -17,6 +17,16 @@ pub trait Canvas {
     /// Soft clouds of color (center, radius, color at the center): fading to nothing at the
     /// radius.
     fn clouds(&mut self, clouds: &[(Pos2, f32, Color32)]);
+    /// The area under a line (`pts`, left to right) down to `base`: `top` at the line, `bottom`
+    /// at the base.
+    fn fill_below(&mut self, pts: &[Pos2], base: f32, top: Color32, bottom: Color32);
+    /// The backdrop (what moves slowly: the sky, the clouds, the rays, the mountains) may be
+    /// kept between frames: true when the canvas put back the last one, so it is not drawn.
+    fn backdrop_kept(&mut self) -> bool {
+        false
+    }
+    /// The backdrop is drawn: the canvas may keep it.
+    fn backdrop_done(&mut self) {}
 }
 
 /// The window's painter, over `rect`.
@@ -85,6 +95,20 @@ impl Canvas for EguiCanvas<'_> {
             self.p.add(Shape::mesh(m));
         }
     }
+
+    fn fill_below(&mut self, pts: &[Pos2], base: f32, top: Color32, bottom: Color32) {
+        let mut m = egui::Mesh::default();
+        for &q in pts {
+            m.colored_vertex(self.at(q), top);
+            m.colored_vertex(self.at(Pos2::new(q.x, base)), bottom);
+        }
+        for i in 0..pts.len().saturating_sub(1) as u32 {
+            let k = i * 2;
+            m.add_triangle(k, k + 1, k + 2);
+            m.add_triangle(k + 1, k + 3, k + 2);
+        }
+        self.p.add(Shape::mesh(m));
+    }
 }
 
 /// A software canvas: an RGBA pixmap.
@@ -93,10 +117,14 @@ pub struct SkiaCanvas {
     font: fontdue::Font,
     /// The last background and its colors: a gradient is drawn once and copied after.
     background: Option<((Color32, Color32), Vec<u8>)>,
-    /// The background with its clouds, and the frames since it was drawn: the clouds move
-    /// slowly, so they are drawn again only every few frames.
+    /// The backdrop (the sky, its clouds, the rays, the mountains), and the frames since it was
+    /// drawn: it moves slowly, so it is drawn again only every few frames.
     clouded: Option<Vec<u8>>,
     clouded_age: u32,
+    /// The sky with its clouds alone, and its age: the clouds are the dearest part, and move
+    /// the slowest.
+    sky: Option<Vec<u8>>,
+    sky_age: u32,
 }
 
 fn paint(c: Color32) -> tiny_skia::Paint<'static> {
@@ -120,6 +148,8 @@ impl SkiaCanvas {
             background: None,
             clouded: None,
             clouded_age: 0,
+            sky: None,
+            sky_age: 0,
         }
     }
 
@@ -169,12 +199,12 @@ impl Canvas for SkiaCanvas {
 
     /// The clouds drawn at an eighth of the size and scaled up smoothly: soft and cheap.
     fn clouds(&mut self, clouds: &[(Pos2, f32, Color32)]) {
-        // drawn five times a second, copied in between
-        if self.clouded_age < 6
-            && let Some(c) = &self.clouded
+        // drawn about once a second (every sixth backdrop), copied in between
+        if self.sky_age < 6
+            && let Some(c) = &self.sky
         {
             self.pixmap.data_mut().copy_from_slice(c);
-            self.clouded_age += 1;
+            self.sky_age += 1;
             return;
         }
         let (w, h) = (self.pixmap.width(), self.pixmap.height());
@@ -226,7 +256,30 @@ impl Canvas for SkiaCanvas {
             tiny_skia::Transform::from_scale(w as f32 / sw as f32, h as f32 / sh as f32),
             None,
         );
-        self.clouded = Some(self.pixmap.data().to_vec());
+        match &mut self.sky {
+            Some(c) => c.copy_from_slice(self.pixmap.data()),
+            None => self.sky = Some(self.pixmap.data().to_vec()),
+        }
+        self.sky_age = 0;
+    }
+
+    /// The backdrop is drawn ten times a second, copied in between.
+    fn backdrop_kept(&mut self) -> bool {
+        if self.clouded_age < 3
+            && let Some(c) = &self.clouded
+        {
+            self.pixmap.data_mut().copy_from_slice(c);
+            self.clouded_age += 1;
+            return true;
+        }
+        false
+    }
+
+    fn backdrop_done(&mut self) {
+        match &mut self.clouded {
+            Some(c) => c.copy_from_slice(self.pixmap.data()),
+            None => self.clouded = Some(self.pixmap.data().to_vec()),
+        }
         self.clouded_age = 0;
     }
 
@@ -299,6 +352,32 @@ impl Canvas for SkiaCanvas {
                 None,
             );
         }
+    }
+
+    fn fill_below(&mut self, pts: &[Pos2], base: f32, top: Color32, bottom: Color32) {
+        let (Some(first), Some(last)) = (pts.first(), pts.last()) else {
+            return;
+        };
+        let mut b = tiny_skia::PathBuilder::new();
+        b.move_to(first.x, base);
+        for q in pts {
+            b.line_to(q.x, q.y);
+        }
+        b.line_to(last.x, base);
+        b.close();
+        let Some(path) = b.finish() else {
+            return;
+        };
+        // one color, between the two (a gradient costs several times more in software)
+        let c = crate::theme::lerp(top, bottom, 0.4);
+        let p = paint(c);
+        self.pixmap.fill_path(
+            &path,
+            &p,
+            tiny_skia::FillRule::Winding,
+            tiny_skia::Transform::identity(),
+            None,
+        );
     }
 
     fn text(&mut self, at: Pos2, align: Align2, text: &str, size: f32, color: Color32) {
