@@ -33,7 +33,7 @@ pub struct App {
     pub seed: u64,
     pub playing: bool,
     /// The automations and the layers' levels over the last minute (10 a second).
-    history: VecDeque<([f32; 6], [f32; 6])>,
+    history: VecDeque<([f32; 6], [f32; knt_engine::LAYERS])>,
     last_sample: f64,
     /// The stage, full window.
     pub stage: bool,
@@ -433,10 +433,8 @@ impl App {
                 Layer::Perc => "pulse",
                 Layer::Choir if !self.snap.choir => "silent",
                 Layer::Choir => "singing",
-                Layer::Drone => "sustained",
-                Layer::Pad => "chords",
-                Layer::Texture => "air & drops",
-                Layer::Bells => "distant",
+                _ if !self.snap.active[i] => "resting",
+                _ => self.snap.patches[i],
             };
             p.text(
                 pos2(m.right() - 34.0, m.bottom() - 30.0),
@@ -551,6 +549,32 @@ impl App {
                     Stroke::new(2.0, col.gamma_multiply(0.4 + lvl)),
                 );
                 p.circle_filled(r.center(), 5.0 + 6.0 * lvl, col);
+            }
+            Layer::Modular => {
+                // sixteen steps, the lit one moving with the pulse of the level
+                let step = ((t * 4.0) as usize) % 16;
+                for k in 0..16 {
+                    let x = r.left() + r.width() * (k as f32 + 0.5) / 16.0;
+                    let on = k == step && lvl > 0.02;
+                    let col = if on { c } else { AMBER_DIM };
+                    p.circle_filled(
+                        pos2(x, r.center().y),
+                        if on { 4.0 + 3.0 * lvl } else { 2.5 },
+                        col,
+                    );
+                }
+                let sweep = (t * 0.2).sin() * 0.5 + 0.5;
+                let pts: Vec<Pos2> = (0..=40)
+                    .map(|j| {
+                        let x = r.left() + r.width() * j as f32 / 40.0;
+                        let d = (j as f32 / 40.0 - sweep).abs();
+                        pos2(
+                            x,
+                            r.bottom() - 10.0 - (1.0 - d).powi(6) * 40.0 * lvl.max(0.1),
+                        )
+                    })
+                    .collect();
+                p.add(Shape::line(pts, Stroke::new(1.2, c.gamma_multiply(0.6))));
             }
             Layer::Choir => {
                 let v = knt_engine::layers::VOWEL_NAMES[(s.vowel.round() as usize).min(4)];
@@ -759,5 +783,8 @@ pub fn event_text(e: &Event) -> String {
         ),
         Event::UserIn => "You are playing".into(),
         Event::UserOut => "The director takes over".into(),
+        Event::Enters(l, "") => format!("{} comes in", l.name()),
+        Event::Enters(l, t) => format!("{} comes in: {t}", l.name()),
+        Event::Leaves(l) => format!("{} fades out", l.name()),
     }
 }

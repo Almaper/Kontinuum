@@ -16,8 +16,8 @@ use knt_dsp::{Chorus, Delay, OnePole, Reverb, Smooth, soft_clip};
 use serde::{Deserialize, Serialize};
 
 pub use director::{AUTOS, Director, Event};
-pub use layers::Hit;
-use layers::{Bells, Block, Choir, Drone, Pad, Perc, Texture, block_level};
+use layers::{Bells, Block, Choir, Drone, Modular, Pad, Perc, Texture, block_level};
+pub use layers::{DronePatch, Hit, ModularPatch, PadPatch};
 pub use music::{Chord, Scale, note_name};
 pub use recipe::{CARTA, Levels, Recipe};
 
@@ -36,17 +36,26 @@ pub enum Layer {
     Bells,
     Perc,
     Choir,
+    Modular,
 }
 
+/// The number of layers.
+pub const LAYERS: usize = 7;
+
 impl Layer {
-    pub const ALL: [Layer; 6] = [
+    pub const ALL: [Layer; LAYERS] = [
         Layer::Drone,
         Layer::Pad,
         Layer::Texture,
         Layer::Bells,
         Layer::Perc,
         Layer::Choir,
+        Layer::Modular,
     ];
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -56,6 +65,7 @@ impl Layer {
             Layer::Bells => "Bells",
             Layer::Perc => "Percussion",
             Layer::Choir => "Choir",
+            Layer::Modular => "Modular",
         }
     }
 
@@ -68,6 +78,7 @@ impl Layer {
             Layer::Bells => (0.7, 0.3),
             Layer::Perc => (0.6, 0.25),
             Layer::Choir => (0.85, 0.2),
+            Layer::Modular => (0.5, 0.45),
         }
     }
 }
@@ -106,7 +117,7 @@ pub struct Params {
     pub volume: f32,
     /// Each layer's fader, 0..1 (0.8: as the recipe has it).
     pub levels: Levels,
-    pub mutes: [bool; 6],
+    pub mutes: [bool; LAYERS],
     /// How much the director's automations move things, 0..1.
     pub evolution: f32,
     /// Biases over the recipe, -1..1.
@@ -139,15 +150,16 @@ impl Default for Params {
                 bells: 0.8,
                 perc: 0.8,
                 choir: 0.8,
+                modular: 0.8,
             },
-            mutes: [false; 6],
+            mutes: [false; LAYERS],
             evolution: 0.6,
             pace_bias: 0.0,
             brightness_bias: 0.0,
             density_bias: 0.0,
             space_bias: 0.0,
             echo_bias: 0.0,
-            warmth: 0.35,
+            warmth: 0.2,
             mode: Mode::Accompany,
             relay_seconds: 120.0,
             play_layer: Layer::Pad,
@@ -206,8 +218,12 @@ pub struct Snapshot {
     pub pulse: bool,
     pub choir: bool,
     /// Each layer's level (a meter) and gain.
-    pub levels: [f32; 6],
-    pub gains: [f32; 6],
+    pub levels: [f32; LAYERS],
+    pub gains: [f32; LAYERS],
+    /// The timbre each layer plays now (its name).
+    pub patches: [&'static str; LAYERS],
+    /// The layers the director has in the current section.
+    pub active: [bool; LAYERS],
     pub master: [f32; 2],
     pub drone_cutoff: f32,
     pub texture_center: f32,
@@ -239,9 +255,12 @@ pub struct Engine {
     bells: Bells,
     perc: Perc,
     choir: Choir,
-    bufs: [Block; 6],
-    gains: [Smooth; 6],
-    meters: [OnePole; 6],
+    modular: Modular,
+    bufs: [Block; LAYERS],
+    gains: [Smooth; LAYERS],
+    meters: [OnePole; LAYERS],
+    /// A high-pass under the music (the rumble a small speaker cannot play only muddies it).
+    hp: [OnePole; 2],
     master_meter: [OnePole; 2],
     chorus: Chorus,
     delay: Delay,
@@ -250,6 +269,10 @@ pub struct Engine {
     fade: Smooth,
     playing: bool,
     limiter: f32,
+    /// The leveler: the music's slow loudness and the gain that brings it to a steady level,
+    /// so a sparse section is not much quieter than a full one (and a stream stays even).
+    loudness: f32,
+    level_gain: f32,
     /// The current block's output and how much of it is handed out.
     out: Block,
     pos: usize,
@@ -261,7 +284,7 @@ impl Engine {
     /// An engine for `recipe` from `seed`, stopped (it fades in on [`Command::Play`]).
     pub fn new(seed: u64, recipe: Recipe, params: Params) -> Self {
         let mut rng = knt_dsp::Rng::new(seed ^ 0x004B_4E54);
-        let gains = Layer::ALL.map(|_| Smooth::new(0.0, 3.0));
+        let gains = Layer::ALL.map(|_| Smooth::new(0.0, 5.0));
         Engine {
             params,
             seed,
@@ -272,9 +295,11 @@ impl Engine {
             bells: Bells::new(),
             perc: Perc::new(&mut rng),
             choir: Choir::new(&mut rng),
-            bufs: [[[0.0; 2]; BLOCK]; 6],
+            modular: Modular::new(&mut rng),
+            bufs: [[[0.0; 2]; BLOCK]; LAYERS],
             gains,
-            meters: [OnePole::default(); 6],
+            meters: [OnePole::default(); LAYERS],
+            hp: [OnePole::default(); 2],
             master_meter: [OnePole::default(); 2],
             chorus: Chorus::new(),
             delay: Delay::new(),
@@ -283,6 +308,8 @@ impl Engine {
             fade: Smooth::new(0.0, 2.0),
             playing: false,
             limiter: 1.0,
+            loudness: 0.1,
+            level_gain: 1.0,
             out: [[0.0; 2]; BLOCK],
             pos: BLOCK,
             frame: 0,
@@ -339,7 +366,7 @@ impl Engine {
                             self.perc.hit(h, v, n);
                         }
                     }
-                    Layer::Texture => self.pad.note_on(n, v),
+                    Layer::Texture | Layer::Modular => self.pad.note_on(n, v),
                 }
             }
             Command::NoteOff { note } => {
@@ -395,6 +422,7 @@ impl Engine {
                 &mut self.choir,
                 &mut self.bells,
                 &mut self.perc,
+                &mut self.modular,
                 self.frame,
             );
         }
@@ -412,12 +440,24 @@ impl Engine {
         self.bells.render(&mut self.bufs[3]);
         self.perc.render(&mut self.bufs[4]);
         self.choir.render(&mut self.bufs[5]);
+        let leads_now = d.leads(&p);
+        self.modular.render(
+            &mut self.bufs[6],
+            leads_now && d.active[Layer::Modular.index()],
+            r.bpm,
+            bright,
+            motion,
+        );
         // the gains: the user's fader (0.8 = as the recipe) times the recipe's level, the
         // percussion and the choir only in their sections (or when played)
         let leads = d.leads(&p);
         for (i, l) in Layer::ALL.into_iter().enumerate() {
             let mut g = p.levels.get(l) / 0.8 * r.levels.get(l);
             if p.mutes[i] {
+                g = 0.0;
+            }
+            // the section's orchestration (the keyboard's layer always sounds when played)
+            if !d.active[i] && !(d.user_active && p.play_layer == l) {
                 g = 0.0;
             }
             match l {
@@ -458,7 +498,8 @@ impl Engine {
         self.fade.target = if self.playing { 1.0 } else { 0.0 };
         let fade = self.fade.step(BLOCK);
         let warmth = 1.0 + 2.5 * p.warmth;
-        let mut gains = [0.0f32; 6];
+        let mut gains = [0.0f32; LAYERS];
+        let hp_c = knt_dsp::coef(1.0 / (std::f32::consts::TAU * 28.0));
         for (g, s) in gains.iter_mut().zip(&mut self.gains) {
             *g = s.step(BLOCK);
         }
@@ -483,6 +524,14 @@ impl Engine {
             let e = echo * 0.8;
             let mut l = cl + el * e + wl * 0.9;
             let mut r = cr + er * e + wr * 0.9;
+            l -= self.hp[0].lp(l, hp_c);
+            r -= self.hp[1].lp(r, hp_c);
+            // the leveler: about -18 dBFS of RMS, within -6..+8 dB, over ~10 s
+            self.loudness += ((l * l + r * r) * 0.5 - self.loudness) * 0.000_002_3;
+            let target = (0.125 / self.loudness.max(1e-6).sqrt()).clamp(0.5, 2.5);
+            self.level_gain += (target - self.level_gain) * 0.000_005;
+            l *= self.level_gain;
+            r *= self.level_gain;
             // the tape: a soft saturation, then the volume and the fade
             l = soft_clip(l * warmth) / warmth.sqrt();
             r = soft_clip(r * warmth) / warmth.sqrt();
@@ -542,6 +591,16 @@ impl Engine {
             choir: d.choir,
             levels: self.meters.map(|m| m.y),
             gains: self.gains.map(|g| g.value),
+            patches: [
+                self.drone.patch.name(),
+                self.pad.patch.name(),
+                "air and drops",
+                "FM bells",
+                "hand percussion",
+                "formant choir",
+                self.modular.patch.name(),
+            ],
+            active: d.active,
             master: self.master_meter.map(|m| m.y),
             drone_cutoff: self.drone.cutoff,
             texture_center: self.texture.center,

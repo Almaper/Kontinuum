@@ -16,6 +16,7 @@ pub struct Levels {
     pub bells: f32,
     pub perc: f32,
     pub choir: f32,
+    pub modular: f32,
 }
 
 impl Default for Levels {
@@ -27,6 +28,7 @@ impl Default for Levels {
             bells: 0.4,
             perc: 0.5,
             choir: 0.4,
+            modular: 0.5,
         }
     }
 }
@@ -41,6 +43,7 @@ impl Levels {
             Bells => self.bells,
             Perc => self.perc,
             Choir => self.choir,
+            Modular => self.modular,
         }
     }
 
@@ -53,6 +56,7 @@ impl Levels {
             Bells => &mut self.bells,
             Perc => &mut self.perc,
             Choir => &mut self.choir,
+            Modular => &mut self.modular,
         }
     }
 }
@@ -82,6 +86,8 @@ pub struct Recipe {
     pub bpm: f32,
     /// How likely a section has the choir, 0..1.
     pub choir: f32,
+    /// How likely a section has the modular synth, 0..1.
+    pub modular: f32,
     /// The reverb's size and the delay's amount, 0..1.
     pub space: f32,
     pub echo: f32,
@@ -105,6 +111,7 @@ const fn levels(drone: f32, pad: f32, texture: f32, bells: f32, perc: f32, choir
         bells,
         perc,
         choir,
+        modular: 0.5,
     }
 }
 
@@ -124,6 +131,7 @@ pub const CARTA: [(&str, Recipe, &str); 8] = [
             pulse: 0.05,
             bpm: 56.0,
             choir: 0.3,
+            modular: 0.15,
             space: 0.85,
             echo: 0.3,
             palette: [[0x1c, 0x1a, 0x2a], [0x9a, 0x8f, 0xb8], [0xe8, 0xb8, 0x7a]],
@@ -145,6 +153,7 @@ pub const CARTA: [(&str, Recipe, &str); 8] = [
             pulse: 0.55,
             bpm: 72.0,
             choir: 0.15,
+            modular: 0.6,
             space: 0.6,
             echo: 0.45,
             palette: [[0x17, 0x22, 0x24], [0x7f, 0xb8, 0xb0], [0xf2, 0xc0, 0x6b]],
@@ -166,6 +175,7 @@ pub const CARTA: [(&str, Recipe, &str); 8] = [
             pulse: 0.1,
             bpm: 60.0,
             choir: 0.9,
+            modular: 0.1,
             space: 1.0,
             echo: 0.25,
             palette: [[0x21, 0x18, 0x14], [0xd9, 0xb8, 0x82], [0xf6, 0xe7, 0xc4]],
@@ -187,6 +197,7 @@ pub const CARTA: [(&str, Recipe, &str); 8] = [
             pulse: 0.3,
             bpm: 66.0,
             choir: 0.25,
+            modular: 0.35,
             space: 0.7,
             echo: 0.6,
             palette: [[0x26, 0x18, 0x10], [0xd0, 0x7a, 0x3c], [0xf4, 0xd0, 0x8a]],
@@ -208,6 +219,7 @@ pub const CARTA: [(&str, Recipe, &str); 8] = [
             pulse: 0.4,
             bpm: 64.0,
             choir: 0.2,
+            modular: 0.3,
             space: 0.65,
             echo: 0.35,
             palette: [[0x14, 0x1e, 0x16], [0x7a, 0x9a, 0x5c], [0xd8, 0xc0, 0x7e]],
@@ -229,6 +241,7 @@ pub const CARTA: [(&str, Recipe, &str); 8] = [
             pulse: 0.1,
             bpm: 70.0,
             choir: 0.2,
+            modular: 0.5,
             space: 0.9,
             echo: 0.75,
             palette: [[0x0e, 0x12, 0x22], [0x6c, 0x8c, 0xd8], [0xe0, 0xe8, 0xff]],
@@ -250,6 +263,7 @@ pub const CARTA: [(&str, Recipe, &str); 8] = [
             pulse: 0.25,
             bpm: 68.0,
             choir: 0.5,
+            modular: 0.3,
             space: 0.75,
             echo: 0.4,
             palette: [[0x2a, 0x16, 0x1a], [0xc8, 0x6a, 0x5a], [0xf0, 0xb0, 0x6a]],
@@ -271,6 +285,7 @@ pub const CARTA: [(&str, Recipe, &str); 8] = [
             pulse: 0.3,
             bpm: 66.0,
             choir: 0.4,
+            modular: 0.4,
             space: 0.75,
             echo: 0.45,
             palette: [[0x22, 0x1a, 0x14], [0xc8, 0x8a, 0x4a], [0xef, 0xe3, 0xc8]],

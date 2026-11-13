@@ -150,3 +150,38 @@ fn drums_and_the_sleep_timer() {
     }
     assert!(!e.snapshot().playing);
 }
+
+#[test]
+fn sections_change_the_orchestration_and_the_timbres() {
+    let mut e = Engine::new(21, CARTA[7].1, Params::default());
+    e.command(Command::Play(true));
+    let mut buf = vec![0.0f32; 2 * 44_100];
+    let mut sets = std::collections::HashSet::new();
+    let mut pads = std::collections::HashSet::new();
+    let mut drones = std::collections::HashSet::new();
+    for _ in 0..900 {
+        e.render(&mut buf);
+        let s = e.snapshot();
+        let tonal = [0usize, 1, 2, 3, 6];
+        let on: Vec<bool> = tonal.iter().map(|&i| s.active[i]).collect();
+        if s.section > 0 {
+            let n = on.iter().filter(|&&b| b).count();
+            assert!((1..=4).contains(&n), "{n} tonal layers at once");
+            assert!(s.active[0] || s.active[1], "neither drone nor pad");
+        }
+        sets.insert(on);
+        if s.active[1] {
+            pads.insert(s.patches[1]);
+        }
+        if s.active[0] {
+            drones.insert(s.patches[0]);
+        }
+    }
+    assert!(
+        sets.len() >= 3,
+        "{} orchestrations in 15 minutes",
+        sets.len()
+    );
+    assert!(pads.len() >= 3, "{pads:?}");
+    assert!(drones.len() >= 2, "{drones:?}");
+}

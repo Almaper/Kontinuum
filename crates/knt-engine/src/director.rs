@@ -9,10 +9,12 @@
 
 use knt_dsp::Rng;
 
-use crate::layers::{Bells, Choir, Drone, Hit, Pad, Perc};
+use crate::layers::{
+    Bells, Choir, Drone, DronePatch, Hit, Modular, ModularPatch, Pad, PadPatch, Perc,
+};
 use crate::music::{Chord, Scale, chord_from_played};
 use crate::recipe::{CARTA, Recipe};
-use crate::{BLOCK, Mode, Params};
+use crate::{BLOCK, LAYERS, Layer, Mode, Params};
 
 /// What the director did, for the stage's captions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +40,10 @@ pub enum Event {
     UserIn,
     /// The user stopped playing (and, in relay mode, the director takes over again).
     UserOut,
+    /// A layer comes in with a timbre.
+    Enters(Layer, &'static str),
+    /// A layer falls silent.
+    Leaves(Layer),
 }
 
 /// The automations the director moves.
@@ -80,6 +86,8 @@ pub struct Director {
     pub chord_len: f32,
     pub pulse: bool,
     pub choir: bool,
+    /// The layers that play in this section (the orchestration).
+    pub active: [bool; LAYERS],
     walks: [Walk; 6],
     /// The automations' values, -1..1.
     pub auto: [f32; 6],
@@ -117,6 +125,7 @@ impl Director {
             chord_len: 1.0,
             pulse: false,
             choir: false,
+            active: [false; LAYERS],
             walks: [Walk::default(); 6],
             auto: [0.0; 6],
             bell_wait: 3.0,
@@ -215,6 +224,7 @@ impl Director {
         choir: &mut Choir,
         bells: &mut Bells,
         perc: &mut Perc,
+        modular: &mut Modular,
         frame: u64,
     ) {
         let dt = BLOCK as f32 / knt_dsp::RATE;
@@ -264,11 +274,11 @@ impl Director {
         self.chord_left -= dt;
         if self.chord_left <= 0.0 && !(p.hold_harmony && self.chord.len > 0) {
             if self.chords_left == 0 {
-                self.new_section(drone);
+                self.new_section(drone, pad, modular);
             }
             self.chords_left = self.chords_left.saturating_sub(1);
             if !(p.mode == Mode::Accompany && any_held) {
-                self.new_chord(p, pad, choir);
+                self.new_chord(p, pad, choir, modular);
             }
         } else if self.chord_left <= 0.0 {
             self.chord_left = 5.0;
@@ -281,7 +291,7 @@ impl Director {
             let rate = (0.015 + density * 0.08) * if any_held { 0.4 } else { 1.0 };
             // exponential waits: a Poisson process
             self.bell_wait = -self.rng.f32().max(1e-4).ln() / rate;
-            if p.levels.bells > 0.0 && self.recipe.levels.bells > 0.0 {
+            if self.active[Layer::Bells.index()] && p.levels.bells > 0.0 {
                 let pool = self.chord.notes();
                 let note = if !pool.is_empty() && self.rng.chance(0.7) {
                     pool[self.rng.below(pool.len())] + 12 * (1 + self.rng.below(2) as i32)
@@ -316,7 +326,7 @@ impl Director {
         (self.recipe.density + p.density_bias * 0.5 + self.auto[5] * 0.25).clamp(0.0, 1.0)
     }
 
-    fn new_section(&mut self, drone: &mut Drone) {
+    fn new_section(&mut self, drone: &mut Drone, pad: &mut Pad, modular: &mut Modular) {
         self.section += 1;
         let first = self.section == 1;
         // drift: every third section, another recipe of the Menu
@@ -349,9 +359,12 @@ impl Director {
         }
         self.event(Event::Section(self.section));
         self.chords_left = 3 + self.rng.below(4) as u32;
-        // the drone: the root and the fifth, two octaves down
-        let low = self.root - 24;
-        if self.rng.chance(0.25) {
+        self.orchestrate(drone, pad, modular);
+        // the drone: the root and the fifth, an octave under middle C
+        let low = self.root - 12;
+        if !self.active[Layer::Drone.index()] {
+            drone.set_notes(&[]);
+        } else if self.rng.chance(0.3) {
             drone.set_notes(&[low]);
         } else {
             drone.set_notes(&[low, low + 7]);
@@ -382,7 +395,7 @@ impl Director {
         }
     }
 
-    fn new_chord(&mut self, p: &Params, pad: &mut Pad, choir: &mut Choir) {
+    fn new_chord(&mut self, p: &Params, pad: &mut Pad, choir: &mut Choir, modular: &mut Modular) {
         let n = self.scale.steps().len() as i32;
         let cur = self.chord.degree as i32;
         // favored moves: home, the fourth, the sixth, the second, the fifth
@@ -417,7 +430,17 @@ impl Director {
             v[padc.len as usize] = low.max(33);
             padc = Chord::from_notes(&v[..padc.len as usize + 1], padc.degree);
         }
-        pad.set_chord(padc.notes());
+        if self.active[Layer::Pad.index()] {
+            pad.set_chord(padc.notes());
+        } else {
+            pad.release_all();
+        }
+        // the modular plays the chord an octave up
+        let mut up = [0i32; crate::music::MAX_CHORD];
+        for (u, n) in up.iter_mut().zip(self.chord.notes()) {
+            *u = n + 12;
+        }
+        modular.set_notes(&up[..self.chord.len as usize]);
         let pace = self.pace(p);
         pad.set_times(2.0 + 8.0 * (1.0 - pace), 4.0 + 8.0 * (1.0 - pace));
         if self.choir {
@@ -433,6 +456,80 @@ impl Director {
             root: r.rem_euclid(12),
             minor: third.rem_euclid(12) == 3,
         });
+    }
+
+    /// The section's orchestration: which of the tonal layers play, and with which timbre. Two
+    /// to four of them, never everything at once, so that every section sounds different.
+    fn orchestrate(&mut self, drone: &mut Drone, pad: &mut Pad, modular: &mut Modular) {
+        let r = self.recipe;
+        let lv = r.levels;
+        let mut on = [false; LAYERS];
+        on[Layer::Drone.index()] = self.rng.chance(0.55 + 0.3 * lv.drone);
+        on[Layer::Pad.index()] = self.rng.chance(0.5 + 0.4 * lv.pad);
+        on[Layer::Texture.index()] = self.rng.chance(0.25 + 0.6 * lv.texture);
+        on[Layer::Bells.index()] = self.rng.chance((lv.bells * 1.4).min(0.6));
+        on[Layer::Modular.index()] = self.rng.chance(r.modular);
+        // the drone or the pad, at least
+        if !on[Layer::Drone.index()] && !on[Layer::Pad.index()] {
+            on[if self.rng.chance(0.5) {
+                Layer::Drone
+            } else {
+                Layer::Pad
+            }
+            .index()] = true;
+        }
+        // at most four
+        let tonal = [
+            Layer::Drone,
+            Layer::Pad,
+            Layer::Texture,
+            Layer::Bells,
+            Layer::Modular,
+        ];
+        while tonal.iter().filter(|l| on[l.index()]).count() > 4 {
+            let l = tonal[2 + self.rng.below(3)];
+            on[l.index()] = false;
+        }
+        // the timbres
+        if on[Layer::Drone.index()] {
+            let p = DronePatch::ALL[self.rng.weighted(&[3.0, 2.0, 2.0, 1.5, 1.5])];
+            drone.set_patch(p);
+        }
+        if on[Layer::Pad.index()] {
+            let k = self.rng.below(PadPatch::ALL.len());
+            let p = if PadPatch::ALL[k] == pad.patch {
+                PadPatch::ALL[(k + 1) % PadPatch::ALL.len()]
+            } else {
+                PadPatch::ALL[k]
+            };
+            pad.set_patch(p);
+        }
+        if on[Layer::Modular.index()] {
+            let p = if self.rng.chance(0.5) {
+                ModularPatch::Sequence
+            } else {
+                ModularPatch::Bongo
+            };
+            modular.set_patch(p);
+        }
+        // the percussion and the choir follow their own sections
+        on[Layer::Perc.index()] = true;
+        on[Layer::Choir.index()] = true;
+        for l in tonal {
+            let i = l.index();
+            let timbre = match l {
+                Layer::Drone => drone.patch.name(),
+                Layer::Pad => pad.patch.name(),
+                Layer::Modular => modular.patch.name(),
+                _ => "",
+            };
+            if on[i] && (!self.active[i] || !timbre.is_empty()) {
+                self.event(Event::Enters(l, timbre));
+            } else if !on[i] && self.active[i] {
+                self.event(Event::Leaves(l));
+            }
+        }
+        self.active = on;
     }
 
     /// Up to three notes of the chord in the choir's range.

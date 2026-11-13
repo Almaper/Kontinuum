@@ -150,6 +150,22 @@ pub fn draw(p: &Painter, full: Rect, s: &Snapshot, now: f64, recipe: Recipe) {
             p.circle_filled(pos2(x, y), 4.0 * u, accent.gamma_multiply(a));
         }
     }
+    // the modular: a row of steps that light as it plays
+    let modular = lv(6);
+    if modular > 0.02 {
+        let step = ((t * 4.0) as usize) % 16;
+        let y = r.top() + h * 0.58;
+        for k in 0..16 {
+            let x = r.left() + w * (0.25 + 0.5 * k as f32 / 15.0);
+            let on = k == step;
+            let a = if on { modular } else { 0.15 * modular };
+            p.circle_filled(
+                pos2(x, y),
+                (if on { 7.0 } else { 3.0 }) * u,
+                accent.gamma_multiply(a),
+            );
+        }
+    }
     // the percussion: a pulse from the center
     let perc = lv(4);
     if perc > 0.02 {
