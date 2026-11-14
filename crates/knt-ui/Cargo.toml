@@ -30,5 +30,7 @@ epaint_default_fonts = "0.37.0"
 # The YouTube chat (the Data API, read with an API key).
 ureq = { version = "2", features = ["json"] }
 serde_json = "1"
+# The control page of the server mode.
+tiny_http = "0.12"
 # The local time, for the day and night of the stage and the seasons.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

@@ -53,6 +53,26 @@ impl Default for Music {
     }
 }
 
+/// The control page.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Web {
+    pub enabled: bool,
+    pub port: u16,
+    /// Its password (one is made up the first time).
+    pub password: String,
+}
+
+impl Default for Web {
+    fn default() -> Self {
+        Web {
+            enabled: true,
+            port: 8080,
+            password: String::new(),
+        }
+    }
+}
+
 /// The server's settings.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -61,6 +81,7 @@ pub struct Settings {
     pub stream: crate::stream::Config,
     pub stage: crate::scene::Options,
     pub chat: crate::chat::Config,
+    pub web: Web,
 }
 
 /// The settings file's place when none is given.
@@ -71,7 +92,9 @@ pub fn default_path() -> PathBuf {
 }
 
 fn log(s: &str) {
-    println!("{} {s}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+    let line = format!("{} {s}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+    println!("{line}");
+    crate::web::push_log(line);
 }
 
 fn recipe_index(name: &str) -> Option<usize> {
@@ -105,42 +128,94 @@ fn params_of(m: &Music) -> Params {
     }
 }
 
-/// Writes a settings file to fill in, with every option.
-pub fn write_template(path: &Path) -> Result<(), String> {
-    let s = Settings::default();
-    let body = toml::to_string_pretty(&s).map_err(|e| e.to_string())?;
-    let head = "# Kontinuum's server settings. Paste your stream key in [stream] key, then restart:\n\
-                #   sudo systemctl restart kontinuum\n\
-                # [music] recipe: a recipe of the Menu (Early Mist, Deep Focus, Cathedral, Copper Rain,\n\
-                #   Wet Forest, Orbit, Dusk, Drift), or \"clock\" to follow the time of day.\n\
-                # [stream] schedule: on = true streams only between start and stop (local time).\n\
-                # [chat] api_key and video: the YouTube chat (votes, welcomes, viewers).\n\n";
+const HEAD: &str = "# Kontinuum's server settings. The easy way to change them is the control page\n\
+                    # (http://THIS-SERVER:8080, the password is in [web]). By hand: edit, then\n\
+                    #   sudo systemctl restart kontinuum\n\
+                    # [music] recipe: Early Mist, Deep Focus, Cathedral, Copper Rain, Wet Forest, Orbit,\n\
+                    #   Dusk or Drift; or \"clock\" to follow the time of day.\n\n";
+
+/// Writes the settings, with a word on how to change them.
+pub fn save(path: &Path, s: &Settings) -> Result<(), String> {
+    let body = toml::to_string_pretty(s).map_err(|e| e.to_string())?;
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
-    std::fs::write(path, format!("{head}{body}")).map_err(|e| format!("{}: {e}", path.display()))
+    std::fs::write(path, format!("{HEAD}{body}")).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Runs until killed.
-pub fn run(path: PathBuf) -> Result<(), String> {
-    if !path.exists() {
-        write_template(&path)?;
-        return Err(format!(
-            "No settings yet: wrote {}. Paste your stream key in it and start again.",
-            path.display()
-        ));
+/// The settings, or new ones (written) the first time; a password for the page if none.
+pub fn load(path: &Path) -> Result<Settings, String> {
+    let mut s: Settings = if path.exists() {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?
+    } else {
+        Settings::default()
+    };
+    if s.web.password.trim().is_empty() || !path.exists() {
+        if s.web.password.trim().is_empty() {
+            s.web.password = crate::web::new_password();
+        }
+        save(path, &s)?;
     }
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let cfg: Settings = toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    let texts_path = path.with_file_name("youtube-texts.txt");
+    Ok(s)
+}
 
+/// Runs until killed: the control page once, the music and the stream again after each change
+/// of the settings.
+pub fn run(path: PathBuf) -> Result<(), String> {
+    let mut cfg = load(&path)?;
+    let shared = Arc::new(crate::web::Shared::default());
+    let (tx, rx) = std::sync::mpsc::channel();
+    if cfg.web.enabled {
+        if let Ok(mut p) = shared.password.lock() {
+            *p = cfg.web.password.clone();
+        }
+        match crate::web::start(cfg.web.port, shared.clone(), tx) {
+            Ok(()) => log(&format!(
+                "the control page: http://THIS-SERVER:{} (password: {})",
+                cfg.web.port, cfg.web.password
+            )),
+            Err(e) => log(&e),
+        }
+    }
+    loop {
+        match session(&path, &cfg, &shared, &rx)? {
+            Some(next) => {
+                log("the new settings are saved: starting again with them");
+                cfg = next;
+                if let Ok(mut p) = shared.password.lock() {
+                    *p = cfg.web.password.clone();
+                }
+            }
+            None => return Ok(()),
+        }
+    }
+}
+
+/// The music and the stream with `cfg`, until new settings come (returned) or the end.
+fn session(
+    path: &Path,
+    cfg: &Settings,
+    shared: &Arc<crate::web::Shared>,
+    rx: &std::sync::mpsc::Receiver<crate::web::WebCmd>,
+) -> Result<Option<Settings>, String> {
+    use crate::web::WebCmd;
+    let texts_path = path.with_file_name("youtube-texts.txt");
+    if let Ok(mut s) = shared.settings.lock() {
+        *s = crate::web::masked(&serde_json::to_value(cfg).map_err(|e| e.to_string())?);
+    }
     crate::scene::with_overlay(|o| o.opts = cfg.stage);
-    let clock = cfg.music.recipe.trim().eq_ignore_ascii_case("clock");
+    let mut clock = cfg.music.recipe.trim().eq_ignore_ascii_case("clock");
     let mut recipe = if clock {
         crate::app::recipe_for_hour(crate::scene::local_time().0)
     } else {
-        recipe_index(&cfg.music.recipe)
-            .ok_or_else(|| format!("No recipe {:?} in the Menu", cfg.music.recipe))?
+        recipe_index(&cfg.music.recipe).unwrap_or_else(|| {
+            log(&format!(
+                "no recipe {:?} in the Menu: Deep Focus",
+                cfg.music.recipe
+            ));
+            1
+        })
     };
     let mut seed = if cfg.music.seed == 0 {
         new_seed()
@@ -151,18 +226,18 @@ pub fn run(path: PathBuf) -> Result<(), String> {
     let (mut player, mut audio) = knt_player::Player::new(seed, CARTA[recipe].1, params);
     let tap = player.tap().ok_or("no tap")?;
     let flag = player.tap_flag();
-    let shared: Arc<Mutex<Snapshot>> = player.shared_snapshot();
+    let snapshot: Arc<Mutex<Snapshot>> = player.shared_snapshot();
     let _ = player.send(Command::Play(true));
     log(&format!(
-        "Kontinuum {} server: {} (seed {seed}), {}",
+        "Kontinuum {}: {} (seed {seed}){}",
         env!("CARGO_PKG_VERSION"),
         CARTA[recipe].0,
-        if clock {
-            "following the clock"
-        } else {
-            "one recipe"
-        }
+        if clock { ", following the clock" } else { "" }
     ));
+    let has_key = cfg.stream.record.is_some() || !cfg.stream.key.trim().is_empty();
+    if !has_key {
+        log("no stream key yet: paste it in the control page (Settings > Stream)");
+    }
 
     // the music, in real time: rendered a little ahead of the clock, never behind
     let quit = Arc::new(AtomicBool::new(false));
@@ -187,26 +262,109 @@ pub fn run(path: PathBuf) -> Result<(), String> {
 
     let mut tap = Some(tap);
     let mut stream: Option<Stream> = None;
+    let mut manual: Option<bool> = None;
     let mut last_state = String::new();
     let mut chat = None;
     let mut brain = crate::chat::Brain::default();
     let mut seeded = Instant::now();
     let mut written = String::new();
+    let mut texts = serde_json::Value::Null;
     let mut chapters = crate::promo::Chapters::default();
     let mut live_since: Option<Instant> = None;
+    let mut vis = crate::stage::Visual::default();
+    let mut last_frame: Option<Instant> = None;
+    let mut last_state_at = Instant::now() - Duration::from_secs(5);
+    let started = Instant::now();
     if !cfg.chat.api_key.trim().is_empty() {
         match crate::chat::Reader::start(&cfg.chat) {
             Ok(r) => chat = Some(r),
             Err(e) => log(&format!("chat: {e}")),
         }
     }
+    let finish = |stream: Option<Stream>, quit: &AtomicBool| {
+        if let Some(s) = stream {
+            s.stop();
+        }
+        quit.store(true, Ordering::SeqCst);
+    };
     loop {
         std::thread::sleep(Duration::from_millis(100));
         player.collect_garbage();
         let now = crate::scene::clock();
         let (hour, _) = crate::scene::local_time();
-        // the schedule
-        let want = !cfg.stream.schedule.on || cfg.stream.schedule.within(hour);
+        // the page's commands
+        while let Ok(c) = rx.try_recv() {
+            match c {
+                WebCmd::Recipe(r) if r < CARTA.len() => {
+                    clock = false;
+                    recipe = r;
+                    log(&format!("the page chose {}", CARTA[r].0));
+                    let _ = player.send(Command::Recipe(Box::new(CARTA[r].1)));
+                }
+                WebCmd::Recipe(_) => {}
+                WebCmd::Clock(on) => {
+                    clock = on;
+                    log(if on {
+                        "following the clock"
+                    } else {
+                        "not following the clock"
+                    });
+                }
+                WebCmd::NewSeed => {
+                    seed = new_seed();
+                    seeded = Instant::now();
+                    log(&format!("a new seed: {seed}"));
+                    let _ = player.send(Command::Seed(seed));
+                }
+                WebCmd::NextSection => {
+                    let _ = player.send(Command::NextSection);
+                }
+                WebCmd::Ambience(a) => {
+                    params.ambience = Ambience::ALL
+                        .into_iter()
+                        .find(|x| x.name() == a)
+                        .unwrap_or(Ambience::None);
+                    let _ = player.send(Command::Params(Box::new(params)));
+                }
+                WebCmd::Level(l) => {
+                    params.ambience_level = l.clamp(0.0, 1.0);
+                    let _ = player.send(Command::Params(Box::new(params)));
+                }
+                WebCmd::Lofi(on) => {
+                    params.lofi = on;
+                    let _ = player.send(Command::Params(Box::new(params)));
+                }
+                WebCmd::Binaural(b) => {
+                    params.binaural = b.max(0.0);
+                    let _ = player.send(Command::Params(Box::new(params)));
+                }
+                WebCmd::Live(m) => {
+                    manual = m;
+                    log(match m {
+                        Some(true) => "the page: live now",
+                        Some(false) => "the page: stop",
+                        None => "the page: as the schedule says",
+                    });
+                }
+                WebCmd::Save(v) => {
+                    let old = serde_json::to_value(cfg).unwrap_or_default();
+                    let v = crate::web::unmask(&v, &old);
+                    match serde_json::from_value::<Settings>(v) {
+                        Ok(next) => match save(path, &next) {
+                            Ok(()) => {
+                                finish(stream.take(), &quit);
+                                return Ok(Some(next));
+                            }
+                            Err(e) => log(&format!("the settings were not saved: {e}")),
+                        },
+                        Err(e) => log(&format!("the settings were not saved: {e}")),
+                    }
+                }
+            }
+        }
+        // live or not: the page decides, else the schedule
+        let scheduled = !cfg.stream.schedule.on || cfg.stream.schedule.within(hour);
+        let want = has_key && manual.unwrap_or(scheduled);
         if want && stream.is_none() {
             if let Some(t) = tap.take() {
                 log(&format!("going live: {}", CARTA[recipe].0));
@@ -216,25 +374,33 @@ pub fn run(path: PathBuf) -> Result<(), String> {
                     cfg.stream.clone(),
                     t,
                     flag.clone(),
-                    shared.clone(),
+                    snapshot.clone(),
                 ));
             }
         } else if !want && stream.is_some() {
-            log("the schedule ends: stopping");
+            log("stopping the stream");
             tap = stream.take().and_then(|s| s.stop());
             live_since = None;
         }
-        if let Some(s) = &stream {
-            let st = s.status();
-            let line = match &st.state {
-                State::Live => format!("live: {}", st.target),
-                State::Retrying(e) => format!("reconnecting: {e}"),
-                other => format!("{other:?}"),
-            };
-            if line != last_state {
-                log(&line);
-                last_state = line;
+        let state_line = match &stream {
+            Some(s) => {
+                let st = s.status();
+                match &st.state {
+                    State::Live => format!("live: {}", st.target),
+                    State::Retrying(e) => format!("reconnecting: {e}"),
+                    other => format!("{other:?}"),
+                }
             }
+            None if !has_key => "waiting for the stream key".into(),
+            None if manual == Some(false) => "stopped".into(),
+            None => format!(
+                "off: the schedule says {} to {}",
+                cfg.stream.schedule.start, cfg.stream.schedule.stop
+            ),
+        };
+        if state_line != last_state {
+            log(&state_line);
+            last_state = state_line.clone();
         }
         // the time of day, a new seed now and then
         if clock {
@@ -315,7 +481,8 @@ pub fn run(path: PathBuf) -> Result<(), String> {
         });
         crate::scene::with_overlay(|o| o.poll = poll);
         // the texts for YouTube, written again when what they say changes
-        let snap = *shared.lock().map_err(|e| e.to_string())?;
+        let snap = *snapshot.lock().map_err(|e| e.to_string())?;
+        vis.update(&snap, now);
         let i = (snap.recipe as usize).min(CARTA.len() - 1);
         if let Some(t) = live_since {
             chapters.note(t.elapsed().as_secs_f64(), CARTA[i].0);
@@ -333,7 +500,7 @@ pub fn run(path: PathBuf) -> Result<(), String> {
                 recipe: i,
                 name: CARTA[i].0.into(),
                 about: CARTA[i].2.into(),
-                key,
+                key: key.clone(),
                 seed,
                 minutes: None,
             },
@@ -352,9 +519,61 @@ pub fn run(path: PathBuf) -> Result<(), String> {
                 ));
             }
             written = text;
+            texts = serde_json::json!({
+                "title": p.title, "description": p.description, "pinned": p.pinned,
+                "hashtags": p.hashtags.join(" "), "tags": p.tags,
+            });
         }
-        if quit.load(Ordering::SeqCst) {
-            return Ok(());
+        // what the page shows: twice a second; a picture every five seconds
+        if last_state_at.elapsed() > Duration::from_millis(500) {
+            last_state_at = Instant::now();
+            let ov = crate::scene::overlay_now();
+            let st = serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "state": state_line,
+                "live": stream.as_ref().is_some_and(|s| s.status().state == State::Live),
+                "streaming": stream.is_some(),
+                "manual": manual,
+                "has_key": has_key,
+                "recipe": i,
+                "recipes": CARTA.iter().map(|c| c.0).collect::<Vec<_>>(),
+                "clock": clock,
+                "seed": seed,
+                "key": key,
+                "section": snap.section,
+                "ambience": params.ambience.name(),
+                "level": params.ambience_level,
+                "lofi": params.lofi,
+                "binaural": params.binaural,
+                "viewers": ov.viewers,
+                "uptime": started.elapsed().as_secs(),
+                "live_for": live_since.map(|t| t.elapsed().as_secs()),
+                "schedule": if cfg.stream.schedule.on {
+                    format!("{} – {}", cfg.stream.schedule.start, cfg.stream.schedule.stop)
+                } else {
+                    String::new()
+                },
+                "chat": chat.is_some(),
+                "texts": texts,
+                "log": crate::web::log_lines().lock().map(|l| l.iter().rev().take(30).cloned().collect::<Vec<_>>()).unwrap_or_default(),
+            });
+            if let Ok(mut s) = shared.state.lock() {
+                *s = st;
+            }
+        }
+        if last_frame.is_none_or(|t| t.elapsed() > Duration::from_secs(5)) {
+            last_frame = Some(Instant::now());
+            let mut cv = crate::canvas::SkiaCanvas::new(640, 360);
+            crate::stage::draw(&mut cv, &snap, &vis, None, &crate::scene::overlay_now());
+            let mut png = Vec::new();
+            if let Some(img) = image::RgbaImage::from_raw(640, 360, cv.rgba().to_vec())
+                && img
+                    .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                    .is_ok()
+                && let Ok(mut f) = shared.frame.lock()
+            {
+                *f = png;
+            }
         }
     }
 }

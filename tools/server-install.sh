@@ -4,10 +4,9 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/Almaper/Kontinuum/main/tools/server-install.sh | bash
 #
-# Then paste your stream key in ~/.config/Kontinuum/server.toml and start it:
-#   nano ~/.config/Kontinuum/server.toml
-#   sudo systemctl restart kontinuum
-# Running it again updates Kontinuum to the latest release (the settings stay).
+# At the end it shows the address and the password of the control page: open it on a phone,
+# paste the stream key in Settings > Stream, and save. Running the script again updates
+# Kontinuum to the latest release (the settings stay).
 set -euo pipefail
 
 TZ_WANTED="${KNT_TIMEZONE:-Europe/Madrid}"
@@ -39,9 +38,7 @@ curl -fsSL "$url" | sudo tar xz -C "$dir" --strip-components=1
 echo "   $(basename "$url") in $dir"
 
 conf="$HOME/.config/Kontinuum/server.toml"
-if [ ! -f "$conf" ]; then
-  "$dir/Kontinuum" --server "$conf" || true
-fi
+mkdir -p "$(dirname "$conf")"
 
 echo "== The service"
 sudo tee /etc/systemd/system/kontinuum.service > /dev/null <<UNIT
@@ -63,22 +60,33 @@ UNIT
 sudo systemctl daemon-reload
 sudo systemctl enable kontinuum > /dev/null 2>&1
 
-if grep -m1 '^key = ' "$conf" | grep -q '""'; then
-  cat <<NEXT
-
-Kontinuum is installed. Now:
-  1. Paste your stream key (YouTube Studio > Go live > Stream > Stream key):
-       nano $conf
-     In [stream], write it between the quotes of key = "", then Ctrl+O, Enter, Ctrl+X.
-  2. Start it:
-       sudo systemctl restart kontinuum
-  3. Watch what it does (Ctrl+C to stop watching; it keeps streaming):
-       journalctl -u kontinuum -f
-  The texts for YouTube (title, description, hashtags) are in
-       $(dirname "$conf")/youtube-texts.txt
-NEXT
-else
-  sudo systemctl restart kontinuum
-  echo
-  echo "Kontinuum is updated and streaming again. Watch it with: journalctl -u kontinuum -f"
+echo "== The control page's port (8080) in the server's firewall"
+if command -v iptables > /dev/null; then
+  if ! sudo iptables -C INPUT -p tcp --dport 8080 -j ACCEPT 2> /dev/null; then
+    sudo iptables -I INPUT -p tcp --dport 8080 -j ACCEPT
+  fi
+  if command -v netfilter-persistent > /dev/null; then
+    sudo netfilter-persistent save > /dev/null 2>&1 || true
+  fi
 fi
+if command -v ufw > /dev/null && sudo ufw status | grep -q active; then
+  sudo ufw allow 8080/tcp > /dev/null
+fi
+
+sudo systemctl restart kontinuum
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -f "$conf" ] && break; sleep 1; done
+ip=$(curl -fsS --max-time 5 https://api.ipify.org || hostname -I | awk '{print $1}')
+pw=$(grep -m1 '^password' "$conf" | cut -d'"' -f2)
+cat <<NEXT
+
+Kontinuum is installed and running.
+
+  The control page:  http://$ip:8080
+  Its password:      $pw
+
+On Oracle Cloud, open the port once in the console: the instance > its subnet > the
+security list > Add ingress rule: source 0.0.0.0/0, TCP, destination port 8080.
+
+Then, on the page: Settings > Stream > paste your stream key > Save and apply.
+What it does, here:  journalctl -u kontinuum -f
+NEXT

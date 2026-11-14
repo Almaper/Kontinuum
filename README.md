@@ -88,18 +88,19 @@ yours has to stay on): no window, no sound card. On Ubuntu or Debian, x64 or Arm
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Almaper/Kontinuum/main/tools/server-install.sh | bash
-nano ~/.config/Kontinuum/server.toml      # paste the stream key in [stream] key
-sudo systemctl restart kontinuum
-journalctl -u kontinuum -f                # what it does
 ```
 
 It installs ffmpeg, Kontinuum (in `/opt/kontinuum`) and a service that starts with the machine
-and restarts if it stops. `server.toml` says what to play (a recipe, or `"clock"` to follow the
-time of day; nature, lo-fi, a new seed every few hours), where to stream (with the other
-platforms and the schedule), what the stage shows, and the chat. The texts for YouTube are
-written to `youtube-texts.txt` beside it. Running the script again updates Kontinuum.
+and restarts if it stops, opens port 8080 in the server's firewall, and shows the address and
+the password of the **control page**. Open it on a phone: paste the stream key in Settings >
+Stream, and save. The page shows a picture of the stage, starts and stops the stream, changes
+the recipe, nature, lo-fi, the seed, gives the texts for YouTube with copy buttons, and edits
+every setting (the schedule, the other platforms, the stage, the chat, its password). On a
+cloud server, open port 8080 in its network rules too (on Oracle Cloud: the subnet's security
+list). The page is plain HTTP, behind its password.
 
-By hand: `Kontinuum --server [server.toml]` (a template is written the first time).
+The settings are in `~/.config/Kontinuum/server.toml`; `journalctl -u kontinuum -f` shows what it
+does. Running the script again updates Kontinuum. By hand: `Kontinuum --server [server.toml]`.
 
 ## Command line
 

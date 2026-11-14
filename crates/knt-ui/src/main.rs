@@ -20,6 +20,7 @@ mod stage;
 mod stream;
 mod theme;
 mod thumb;
+mod web;
 
 use std::path::PathBuf;
 

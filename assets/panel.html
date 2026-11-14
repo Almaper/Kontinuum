@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1f1a16">
+<title>Kontinuum</title>
+<style>
+  :root {
+    --bg: #1f1a16; --wood: #2b231d; --plate: #efe3c8; --plate2: #e2d3b2; --ink: #2a2420;
+    --muted: #6d6156; --amber: #e0a24a; --rust: #c2552d; --teal: #3f8f86; --line: #cdbb98;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 10px; padding: 14px 16px 10px; color: var(--plate); }
+  .word { font-weight: 300; letter-spacing: .14em; font-size: 20px; }
+  .word i { font-style: italic; }
+  .pill { margin-left: auto; padding: 4px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; background: #4a3f36; color: var(--plate); white-space: nowrap; }
+  .pill.live { background: var(--rust); }
+  nav { display: flex; gap: 6px; padding: 0 12px 10px; overflow-x: auto; }
+  nav button { flex: none; background: var(--wood); color: var(--plate); border: 1px solid #4a3f36; border-radius: 99px; padding: 7px 14px; font-size: 14px; }
+  nav button.on { background: var(--plate); color: var(--ink); }
+  main { padding: 0 12px 40px; max-width: 760px; margin: 0 auto; }
+  .card { background: var(--plate); border-radius: 14px; padding: 14px; margin-bottom: 12px; box-shadow: 0 2px 0 #0006; }
+  .card h2 { margin: 0 0 10px; font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  img.frame { width: 100%; aspect-ratio: 16/9; border-radius: 10px; background: #000; display: block; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  @media (min-width: 560px) { .grid { grid-template-columns: repeat(4, 1fr); } }
+  button.b { border: 0; border-radius: 10px; padding: 11px 12px; font-size: 14px; background: var(--plate2); color: var(--ink); font-weight: 500; }
+  button.b.sel { background: var(--ink); color: var(--plate); }
+  button.go { background: var(--rust); color: #fff; }
+  button.ok { background: var(--teal); color: #fff; }
+  .facts { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 14px; font-size: 13px; color: var(--muted); margin-top: 10px; }
+  .facts b { color: var(--ink); font-weight: 600; }
+  label.f { display: block; margin: 10px 0 4px; font-size: 13px; color: var(--muted); }
+  input[type=text], input[type=password], input[type=number], select, textarea {
+    width: 100%; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: #fbf6ea; font: inherit; color: var(--ink);
+  }
+  textarea { min-height: 120px; font-size: 13px; }
+  .check { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+  .check input { width: 20px; height: 20px; accent-color: var(--rust); }
+  input[type=range] { width: 100%; accent-color: var(--rust); }
+  .hint { font-size: 12px; color: var(--muted); margin: 4px 0 0; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .log { font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+  .copy { float: right; }
+  #login { max-width: 360px; margin: 18vh auto 0; }
+  .save { position: sticky; bottom: 10px; display: flex; gap: 8px; }
+  .save button { flex: 1; }
+  .msg { font-size: 13px; color: var(--rust); min-height: 18px; margin-top: 6px; }
+  .extra { border-top: 1px dashed var(--line); padding-top: 8px; margin-top: 8px; }
+  .hide { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <span class="word"><i>K</i>O<i>N</i><i>T</i>INUUM</span>
+  <span class="pill" id="pill">…</span>
+</header>
+
+<div id="login" class="card hide">
+  <h2 data-t="Control page">Control page</h2>
+  <label class="f" data-t="Password">Password</label>
+  <input type="password" id="pw" autocomplete="current-password">
+  <div class="row" style="margin-top:12px"><button class="b go" id="loginb" data-t="Sign in">Sign in</button></div>
+  <p class="msg" id="loginmsg"></p>
+  <p class="hint" data-t="pwhint">The password is in the server's settings ([web] password), and in its log when it starts.</p>
+</div>
+
+<div id="app" class="hide">
+<nav>
+  <button data-tab="control" class="on" data-t="Control">Control</button>
+  <button data-tab="settings" data-t="Settings">Settings</button>
+  <button data-tab="texts" data-t="YouTube texts">YouTube texts</button>
+  <button data-tab="log" data-t="Log">Log</button>
+</nav>
+<main>
+  <section id="tab-control">
+    <div class="card">
+      <img class="frame" id="frame" alt="">
+      <div class="facts" id="facts"></div>
+    </div>
+    <div class="card">
+      <h2 data-t="The stream">The stream</h2>
+      <div class="row">
+        <button class="b go" data-live="true" data-t="Go live now">Go live now</button>
+        <button class="b" data-live="false" data-t="Stop">Stop</button>
+        <button class="b" data-live="null" data-t="As the schedule says">As the schedule says</button>
+      </div>
+      <p class="hint" id="nokey"></p>
+    </div>
+    <div class="card">
+      <h2 data-t="Recipe">Recipe</h2>
+      <div class="grid" id="recipes"></div>
+      <div class="check"><input type="checkbox" id="clock"><span data-t="Follow the clock (the recipe changes with the time of day)">Follow the clock</span></div>
+      <div class="row">
+        <button class="b" data-cmd="seed" data-t="New seed">New seed</button>
+        <button class="b" data-cmd="next" data-t="Next section">Next section</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2 data-t="Sounds">Sounds</h2>
+      <div class="row" id="amb"></div>
+      <label class="f" data-t="Nature level">Nature level</label>
+      <input type="range" id="level" min="0" max="1" step="0.05">
+      <div class="check"><input type="checkbox" id="lofi"><span data-t="Lo-fi (a soft beat and a record's crackle)">Lo-fi</span></div>
+      <div class="row" id="bin"></div>
+    </div>
+  </section>
+
+  <section id="tab-settings" class="hide">
+    <div class="card">
+      <h2 data-t="Stream">Stream</h2>
+      <label class="f" data-t="Stream key (YouTube Studio › Go live › Stream)">Stream key</label>
+      <input type="password" data-path="stream.key" autocomplete="off">
+      <label class="f" data-t="Server">Server</label>
+      <select data-path="stream.url">
+        <option value="rtmp://a.rtmp.youtube.com/live2">YouTube</option>
+        <option value="rtmps://a.rtmps.youtube.com:443/live2">YouTube (RTMPS)</option>
+      </select>
+      <div class="two">
+        <div><label class="f" data-t="Quality">Quality</label>
+          <select data-path="stream.height" data-type="num"><option value="720">720p</option><option value="1080">1080p</option></select></div>
+        <div><label class="f" data-t="Frames per second">Frames per second</label>
+          <select data-path="stream.fps" data-type="num"><option value="24">24</option><option value="30">30</option></select></div>
+      </div>
+      <div class="check"><input type="checkbox" data-path="stream.vertical"><span data-t="Vertical video (9:16)">Vertical video (9:16)</span></div>
+      <label class="f" data-t="Language of the YouTube texts">Language of the YouTube texts</label>
+      <select data-path="stream.lang"><option value="English">English</option><option value="Spanish">Español</option><option value="Both" data-t="Both">Both</option></select>
+      <div class="check"><input type="checkbox" data-path="stream.keep_copy"><span data-t="Keep a copy of every stream on the server">Keep a copy of every stream</span></div>
+      <p class="hint" data-t="copyhint">About 1.3 GB per hour at 720p: the free server's disk fills in a day and a half.</p>
+    </div>
+    <div class="card">
+      <h2 data-t="Schedule">Schedule</h2>
+      <div class="check"><input type="checkbox" data-path="stream.schedule.on"><span data-t="Live only between these times (every day)">Live only between these times</span></div>
+      <div class="two">
+        <input type="text" data-path="stream.schedule.start" placeholder="22:00">
+        <input type="text" data-path="stream.schedule.stop" placeholder="06:00">
+      </div>
+      <p class="hint" data-t="schedhint">Local time of the server, HH:MM. Off: live all the time.</p>
+    </div>
+    <div class="card">
+      <h2 data-t="Also stream to">Also stream to</h2>
+      <div id="extras"></div>
+      <div class="row" style="margin-top:8px"><button class="b" id="addextra" data-t="+ another">+ another</button></div>
+    </div>
+    <div class="card">
+      <h2 data-t="Music">Music</h2>
+      <label class="f" data-t="Recipe at the start">Recipe at the start</label>
+      <select data-path="music.recipe" id="srecipe"></select>
+      <div class="two">
+        <div><label class="f" data-t="Seed (0: a new one)">Seed (0: a new one)</label><input type="number" data-path="music.seed" data-type="num" min="0"></div>
+        <div><label class="f" data-t="New seed every (hours)">New seed every (hours)</label><input type="number" data-path="music.new_seed_hours" data-type="num" min="0" step="0.5"></div>
+      </div>
+      <label class="f" data-t="Nature">Nature</label>
+      <select data-path="music.ambience"><option value="none">—</option><option value="rain">rain</option><option value="forest">forest</option><option value="fire">fire</option><option value="sea">sea</option></select>
+      <label class="f" data-t="Nature level">Nature level</label>
+      <input type="range" data-path="music.ambience_level" data-type="num" min="0" max="1" step="0.05">
+      <div class="check"><input type="checkbox" data-path="music.lofi"><span>Lo-fi</span></div>
+      <label class="f">Binaural</label>
+      <select data-path="music.binaural" data-type="num"><option value="0">—</option><option value="4">4 Hz</option><option value="10">10 Hz</option><option value="14">14 Hz</option></select>
+      <label class="f" data-t="Evolution (how far the director moves)">Evolution</label>
+      <input type="range" data-path="music.evolution" data-type="num" min="0" max="1" step="0.05">
+    </div>
+    <div class="card">
+      <h2 data-t="Stage">Stage</h2>
+      <div class="check"><input type="checkbox" data-path="stage.day_night"><span data-t="Day and night">Day and night</span></div>
+      <div class="check"><input type="checkbox" data-path="stage.lake"><span data-t="Lake">Lake</span></div>
+      <div class="check"><input type="checkbox" data-path="stage.camera"><span data-t="Moving camera">Moving camera</span></div>
+      <div class="check"><input type="checkbox" data-path="stage.scenery"><span data-t="Scenery">Scenery</span></div>
+      <div class="check"><input type="checkbox" data-path="stage.weather"><span data-t="Weather">Weather</span></div>
+      <div class="check"><input type="checkbox" data-path="stage.seasons"><span data-t="Seasons">Seasons</span></div>
+      <div class="check"><input type="checkbox" data-path="stage.window"><span data-t="Cozy window">Cozy window</span></div>
+      <div class="check"><input type="checkbox" data-path="stage.mascot"><span>Lumo</span></div>
+      <div class="check"><input type="checkbox" data-path="stage.constellation"><span data-t="Seed constellation">Seed constellation</span></div>
+    </div>
+    <div class="card">
+      <h2 data-t="Chat (YouTube)">Chat (YouTube)</h2>
+      <label class="f" data-t="API key (YouTube Data API v3)">API key</label>
+      <input type="password" data-path="chat.api_key" autocomplete="off">
+      <label class="f" data-t="Link of the live video">Link of the live video</label>
+      <input type="text" data-path="chat.video" placeholder="https://youtube.com/live/…">
+      <div class="check"><input type="checkbox" data-path="chat.votes"><span data-t="Votes (!orbit, !1)">Votes</span></div>
+      <div class="two">
+        <div><label class="f" data-t="A poll every (minutes, 0: none)">A poll every (minutes)</label><input type="number" data-path="chat.poll_minutes" data-type="num" min="0"></div>
+        <div><label class="f" data-t="Read the chat every (seconds)">Read the chat every (s)</label><input type="number" data-path="chat.every" data-type="num" min="5"></div>
+      </div>
+      <div class="check"><input type="checkbox" data-path="chat.sounds"><span data-t="Sounds (!nature rain, !lofi)">Sounds</span></div>
+      <div class="check"><input type="checkbox" data-path="chat.greet"><span data-t="Welcome newcomers">Welcome newcomers</span></div>
+      <label class="f" data-t="More blocked words (comma-separated)">More blocked words</label>
+      <input type="text" data-path="chat.blocked_words">
+      <label class="f" data-t="Ignored names (comma-separated)">Ignored names</label>
+      <input type="text" data-path="chat.blocked_names">
+    </div>
+    <div class="card">
+      <h2 data-t="This page">This page</h2>
+      <label class="f" data-t="Password">Password</label>
+      <input type="password" data-path="web.password" autocomplete="new-password">
+      <p class="hint" data-t="pwchange">To change it, write a new one (at least 8 characters).</p>
+    </div>
+    <div class="save"><button class="b ok" id="saveb" data-t="Save and apply">Save and apply</button></div>
+    <p class="msg" id="savemsg"></p>
+  </section>
+
+  <section id="tab-texts" class="hide">
+    <div id="texts"></div>
+  </section>
+
+  <section id="tab-log" class="hide">
+    <div class="card"><div class="log" id="log"></div></div>
+    <div class="row"><button class="b" id="logout" data-t="Sign out">Sign out</button></div>
+  </section>
+</main>
+</div>
+
+<script>
+const ES = navigator.language.toLowerCase().startsWith('es');
+const T = {
+  'Control page': 'Página de control', 'Password': 'Contraseña', 'Sign in': 'Entrar',
+  'pwhint': 'La contraseña está en los ajustes del servidor ([web] password) y en su registro al arrancar.',
+  'Control': 'Control', 'Settings': 'Ajustes', 'YouTube texts': 'Textos de YouTube', 'Log': 'Registro',
+  'The stream': 'La emisión', 'Go live now': 'Emitir ahora', 'Stop': 'Parar', 'As the schedule says': 'Según el horario',
+  'Recipe': 'Receta', 'Follow the clock (the recipe changes with the time of day)': 'Seguir el reloj (la receta cambia con la hora)',
+  'New seed': 'Semilla nueva', 'Next section': 'Siguiente sección', 'Sounds': 'Sonidos', 'Nature level': 'Nivel de naturaleza',
+  "Lo-fi (a soft beat and a record's crackle)": 'Lo-fi (ritmo suave y crujido de vinilo)',
+  'Stream': 'Emisión', 'Stream key (YouTube Studio › Go live › Stream)': 'Clave de emisión (YouTube Studio › Emitir en directo › Emisión)',
+  'Server': 'Servidor', 'Quality': 'Calidad', 'Frames per second': 'Imágenes por segundo', 'Vertical video (9:16)': 'Vídeo vertical (9:16)',
+  'Language of the YouTube texts': 'Idioma de los textos de YouTube', 'Both': 'Ambos',
+  'Keep a copy of every stream on the server': 'Guardar una copia de cada emisión en el servidor',
+  'copyhint': 'Unos 1,3 GB por hora a 720p: el disco del servidor gratuito se llena en día y medio.',
+  'Schedule': 'Horario', 'Live only between these times (every day)': 'Emitir solo entre estas horas (cada día)',
+  'schedhint': 'Hora local del servidor, HH:MM. Desactivado: emite siempre.',
+  'Also stream to': 'Emitir también a', '+ another': '+ otro', 'Music': 'Música', 'Recipe at the start': 'Receta al arrancar',
+  'Seed (0: a new one)': 'Semilla (0: una nueva)', 'New seed every (hours)': 'Semilla nueva cada (horas)', 'Nature': 'Naturaleza',
+  'Evolution (how far the director moves)': 'Evolución (cuánto se mueve el director)', 'Stage': 'Escenario',
+  'Day and night': 'Día y noche', 'Lake': 'Lago', 'Moving camera': 'Cámara en movimiento', 'Scenery': 'Paisaje',
+  'Weather': 'Tiempo', 'Seasons': 'Estaciones', 'Cozy window': 'Ventana acogedora', 'Seed constellation': 'Constelación de la semilla',
+  'API key (YouTube Data API v3)': 'Clave de API (YouTube Data API v3)', 'Link of the live video': 'Enlace del vídeo en directo',
+  'Votes (!orbit, !1)': 'Votos (!orbit, !1)', 'A poll every (minutes, 0: none)': 'Encuesta cada (minutos, 0: ninguna)',
+  'Read the chat every (seconds)': 'Leer el chat cada (segundos)', 'Sounds (!nature rain, !lofi)': 'Sonidos (!naturaleza lluvia, !lofi)',
+  'Welcome newcomers': 'Saludar a los nuevos', 'More blocked words (comma-separated)': 'Más palabras bloqueadas (separadas por comas)',
+  'Ignored names (comma-separated)': 'Nombres ignorados (separados por comas)', 'This page': 'Esta página',
+  'pwchange': 'Para cambiarla, escribe una nueva (al menos 8 caracteres).', 'Save and apply': 'Guardar y aplicar', 'Sign out': 'Salir',
+  'Copy': 'Copiar', 'Copied': 'Copiado', 'Title': 'Título', 'Description': 'Descripción', 'Pinned comment': 'Comentario fijado',
+  'Hashtags': 'Hashtags', 'Tags': 'Etiquetas', 'LIVE': 'EN DIRECTO', 'off': 'apagado', 'Saved: starting again with the new settings…': 'Guardado: arrancando de nuevo con los ajustes nuevos…',
+  'nokey': 'Falta la clave de emisión: ponla en Ajustes › Emisión.', 'Wrong password.': 'Contraseña incorrecta.',
+  'state': 'Estado', 'key': 'Tonalidad', 'section': 'Sección', 'seed': 'Semilla', 'viewers': 'Espectadores', 'live for': 'En directo desde hace',
+  'schedule': 'Horario', 'always': 'siempre', 'Name': 'Nombre', 'Key': 'Clave', 'On': 'Activo', 'Remove': 'Quitar', 'clock': 'Seguir el reloj',
+  'Password too short.': 'La contraseña es demasiado corta.',
+};
+const t = s => (ES && T[s]) || s;
+if (ES) document.querySelectorAll('[data-t]').forEach(e => { if (T[e.dataset.t]) e.textContent = T[e.dataset.t]; });
+if (!ES) { document.documentElement.lang = 'en';
+  const EN = { pwhint: "The password is in the server's settings ([web] password), and in its log when it starts.",
+    copyhint: "About 1.3 GB per hour at 720p: the free server's disk fills in a day and a half.",
+    schedhint: 'Local time of the server, HH:MM. Off: live all the time.',
+    pwchange: 'To change it, write a new one (at least 8 characters).' };
+  document.querySelectorAll('[data-t]').forEach(e => { if (EN[e.dataset.t]) e.textContent = EN[e.dataset.t]; });
+}
+
+const $ = id => document.getElementById(id);
+let state = null, settings = null;
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (r.status === 401 && path !== '/login') { showLogin(); throw new Error('signed out'); }
+  return r;
+}
+const cmd = (what, value) => api('/api/cmd', { do: what, value }).then(poll);
+
+function showLogin() { $('login').classList.remove('hide'); $('app').classList.add('hide'); $('pill').textContent = '…'; }
+function showApp() { $('login').classList.add('hide'); $('app').classList.remove('hide'); }
+
+$('loginb').onclick = async () => {
+  $('loginmsg').textContent = '';
+  const r = await fetch('/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: $('pw').value }) });
+  if (r.ok) { showApp(); poll(); } else { $('loginmsg').textContent = r.status === 401 ? t('Wrong password.') : await r.text(); }
+};
+$('pw').addEventListener('keydown', e => { if (e.key === 'Enter') $('loginb').click(); });
+$('logout').onclick = () => api('/logout', {}).then(showLogin);
+
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('main > section').forEach(s => s.classList.toggle('hide', s.id !== 'tab-' + b.dataset.tab));
+  if (b.dataset.tab === 'settings') loadSettings();
+});
+
+document.querySelectorAll('[data-live]').forEach(b => b.onclick = () => cmd('live', JSON.parse(b.dataset.live)));
+document.querySelectorAll('[data-cmd]').forEach(b => b.onclick = () => cmd(b.dataset.cmd));
+$('clock').onchange = e => cmd('clock', e.target.checked);
+$('lofi').onchange = e => cmd('lofi', e.target.checked);
+$('level').onchange = e => cmd('level', parseFloat(e.target.value));
+const AMB = [['none', '—'], ['rain', ES ? 'lluvia' : 'rain'], ['forest', ES ? 'bosque' : 'forest'], ['fire', ES ? 'fuego' : 'fire'], ['sea', ES ? 'mar' : 'sea']];
+$('amb').innerHTML = AMB.map(([v, n]) => `<button class="b" data-amb="${v}">${n}</button>`).join('');
+$('amb').querySelectorAll('button').forEach(b => b.onclick = () => cmd('ambience', b.dataset.amb));
+$('bin').innerHTML = '<span style="font-size:13px;color:var(--muted)">Binaural</span>' + [[0, '—'], [4, '4 Hz'], [10, '10 Hz'], [14, '14 Hz']].map(([v, n]) => `<button class="b" data-bin="${v}">${n}</button>`).join('');
+$('bin').querySelectorAll('button').forEach(b => b.onclick = () => cmd('binaural', parseFloat(b.dataset.bin)));
+
+function dur(s) { if (s == null) return '—'; const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60; return h ? `${h} h ${m} min` : `${m} min`; }
+
+function render() {
+  const s = state; if (!s) return;
+  const live = s.live;
+  $('pill').textContent = live ? '● ' + t('LIVE') : (s.streaming ? '…' : t('off'));
+  $('pill').classList.toggle('live', live);
+  $('facts').innerHTML = [
+    [t('state'), s.state], [t('key'), s.key], [t('section'), s.section], [t('seed'), s.seed],
+    [t('viewers'), s.viewers ?? '—'], [t('live for'), dur(s.live_for)], [t('schedule'), s.schedule || t('always')], ['v', s.version],
+  ].map(([k, v]) => `<div>${k}<br><b>${String(v).replace(/[<&]/g, c => c === '<' ? '&lt;' : '&amp;')}</b></div>`).join('');
+  $('nokey').textContent = s.has_key ? '' : t('nokey');
+  if (!$('recipes').children.length) {
+    $('recipes').innerHTML = s.recipes.map((n, i) => `<button class="b" data-r="${i}">${n}</button>`).join('');
+    $('recipes').querySelectorAll('button').forEach(b => b.onclick = () => cmd('recipe', parseInt(b.dataset.r)));
+  }
+  $('recipes').querySelectorAll('button').forEach(b => b.classList.toggle('sel', parseInt(b.dataset.r) === s.recipe));
+  $('clock').checked = s.clock; $('lofi').checked = s.lofi;
+  if (document.activeElement !== $('level')) $('level').value = s.level;
+  $('amb').querySelectorAll('button').forEach(b => b.classList.toggle('sel', b.dataset.amb === s.ambience));
+  $('bin').querySelectorAll('button').forEach(b => b.classList.toggle('sel', parseFloat(b.dataset.bin) === s.binaural));
+  document.querySelectorAll('[data-live]').forEach(b => b.classList.toggle('sel', JSON.stringify(s.manual) === b.dataset.live && b.dataset.live !== 'true'));
+  $('log').textContent = (s.log || []).join('\n');
+  const tx = s.texts || {};
+  if (JSON.stringify(tx) !== $('texts').dataset.v) {
+    $('texts').dataset.v = JSON.stringify(tx);
+    $('texts').innerHTML = [['title', 'Title'], ['description', 'Description'], ['pinned', 'Pinned comment'], ['hashtags', 'Hashtags'], ['tags', 'Tags']]
+      .map(([k, n]) => `<div class="card"><h2>${t(n)}<button class="b copy" data-copy="${k}">${t('Copy')}</button></h2><textarea readonly id="tx-${k}" style="min-height:${k === 'description' ? 220 : 60}px"></textarea></div>`).join('');
+    for (const k in tx) { const e = $('tx-' + k); if (e) e.value = tx[k]; }
+    $('texts').querySelectorAll('[data-copy]').forEach(b => b.onclick = async () => {
+      const e = $('tx-' + b.dataset.copy); e.select();
+      try { await navigator.clipboard.writeText(e.value); } catch { document.execCommand('copy'); }
+      b.textContent = t('Copied'); setTimeout(() => b.textContent = t('Copy'), 1500);
+    });
+  }
+}
+
+async function poll() {
+  try {
+    const r = await api('/api/state');
+    if (r.ok) { state = await r.json(); showApp(); render(); }
+  } catch (e) {}
+}
+let lastFrame = 0;
+setInterval(() => { if (!$('app').classList.contains('hide')) poll(); }, 2000);
+setInterval(() => { if (!$('app').classList.contains('hide') && !$('tab-control').classList.contains('hide')) $('frame').src = '/api/frame.png?' + Date.now(); }, 5000);
+
+// ---- settings ----
+const get = (o, p) => p.split('.').reduce((a, k) => a == null ? a : a[k], o);
+const set = (o, p, v) => { const ks = p.split('.'); const last = ks.pop(); ks.reduce((a, k) => a[k] ??= {}, o)[last] = v; };
+
+function extrasHtml() {
+  return (settings.stream.extra || []).map((d, i) => `<div class="extra">
+    <div class="two"><input type="text" data-x="${i}" data-k="name" placeholder="${t('Name')}" value="${(d.name || '').replace(/"/g, '&quot;')}">
+    <label class="check" style="margin:0"><input type="checkbox" data-x="${i}" data-k="on" ${d.on ? 'checked' : ''}>${t('On')}</label></div>
+    <input type="text" data-x="${i}" data-k="url" placeholder="rtmp://…" value="${(d.url || '').replace(/"/g, '&quot;')}" style="margin-top:6px">
+    <div class="two" style="margin-top:6px"><input type="password" data-x="${i}" data-k="key" placeholder="${t('Key')}" value="${(d.key || '').replace(/"/g, '&quot;')}" autocomplete="off">
+    <button class="b" data-rm="${i}">${t('Remove')}</button></div></div>`).join('');
+}
+function bindExtras() {
+  $('extras').innerHTML = extrasHtml();
+  $('extras').querySelectorAll('[data-x]').forEach(e => e.onchange = () => {
+    const d = settings.stream.extra[parseInt(e.dataset.x)];
+    d[e.dataset.k] = e.type === 'checkbox' ? e.checked : e.value;
+  });
+  $('extras').querySelectorAll('[data-rm]').forEach(b => b.onclick = () => { settings.stream.extra.splice(parseInt(b.dataset.rm), 1); bindExtras(); });
+}
+$('addextra').onclick = () => { settings.stream.extra.push({ name: '', url: 'rtmp://', key: '', on: true }); bindExtras(); };
+
+async function loadSettings() {
+  const r = await api('/api/settings'); if (!r.ok) return;
+  settings = await r.json();
+  const sr = $('srecipe');
+  sr.innerHTML = `<option value="clock">${t('clock')}</option>` + (state ? state.recipes : []).map(n => `<option>${n}</option>`).join('');
+  const url = document.querySelector('[data-path="stream.url"]');
+  const u = settings.stream.url;
+  if (![...url.options].some(o => o.value === u)) url.add(new Option(u, u));
+  document.querySelectorAll('[data-path]').forEach(e => {
+    const v = get(settings, e.dataset.path);
+    if (e.type === 'checkbox') e.checked = !!v; else e.value = v ?? '';
+    if (e.tagName === 'SELECT' && e.dataset.type === 'num') e.value = String(v);
+  });
+  bindExtras();
+}
+$('saveb').onclick = async () => {
+  document.querySelectorAll('[data-path]').forEach(e => {
+    let v = e.type === 'checkbox' ? e.checked : e.value;
+    if (e.dataset.type === 'num') v = parseFloat(v) || 0;
+    set(settings, e.dataset.path, v);
+  });
+  const pw = settings.web.password;
+  if (pw !== '••••••' && pw.length < 8) { $('savemsg').textContent = t('Password too short.'); return; }
+  await api('/api/cmd', { do: 'save', value: settings });
+  $('savemsg').textContent = t('Saved: starting again with the new settings…');
+  setTimeout(() => { $('savemsg').textContent = ''; loadSettings(); }, 4000);
+};
+
+poll().then(() => { if (!state) showLogin(); });
+</script>
+</body>
+</html>
