@@ -81,6 +81,26 @@ without repeating itself. You can also play along with a MIDI keyboard or pads.
 - **My recipes:** save what plays (the recipe, the knobs, the sounds, the seed) under a name.
 - **English or Spanish**, and a notice when a new version is out.
 
+## On a server
+
+Kontinuum can stream on its own from a Linux server (a cloud one, say, so that no computer of
+yours has to stay on): no window, no sound card. On Ubuntu or Debian, x64 or Arm:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Almaper/Kontinuum/main/tools/server-install.sh | bash
+nano ~/.config/Kontinuum/server.toml      # paste the stream key in [stream] key
+sudo systemctl restart kontinuum
+journalctl -u kontinuum -f                # what it does
+```
+
+It installs ffmpeg, Kontinuum (in `/opt/kontinuum`) and a service that starts with the machine
+and restarts if it stops. `server.toml` says what to play (a recipe, or `"clock"` to follow the
+time of day; nature, lo-fi, a new seed every few hours), where to stream (with the other
+platforms and the schedule), what the stage shows, and the chat. The texts for YouTube are
+written to `youtube-texts.txt` beside it. Running the script again updates Kontinuum.
+
+By hand: `Kontinuum --server [server.toml]` (a template is written the first time).
+
 ## Command line
 
 ```sh

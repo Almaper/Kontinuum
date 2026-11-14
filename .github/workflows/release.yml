@@ -35,6 +35,10 @@ jobs:
           - name: linux-x64
             os: ubuntu-22.04
             exe: ""
+          # for Arm servers (Oracle Cloud's free ones, a Raspberry Pi 5)
+          - name: linux-arm64
+            os: ubuntu-22.04-arm
+            exe: ""
     steps:
       - uses: actions/checkout@v4
       - name: Install the ALSA headers
@@ -58,7 +62,9 @@ jobs:
           name="Kontinuum-$version-${{ matrix.name }}"
           mkdir -p "dist/$name"
           cp "target/dist/Kontinuum${{ matrix.exe }}" "target/dist/knt${{ matrix.exe }}" "dist/$name/"
-          cp README.md LICENSE "dist/$name/"
+          cp README.md LICENSE NOTICE "dist/$name/"
+          cp assets/fonts/OFL.txt "dist/$name/OFL-Inter.txt"
+          cp tools/server-install.sh "dist/$name/"
           cp assets/logo.svg assets/icon.svg "dist/$name/"
           if [ -f target/dist/ffmpeg.exe ]; then cp target/dist/ffmpeg.exe "dist/$name/"; fi
           if [ "${{ runner.os }}" = "macOS" ]; then
@@ -126,4 +132,4 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "Kontinuum $version" \
-            --notes "Downloads for Windows (an installer, or a zip), macOS (Apple silicon and Intel) and Linux. Install, or unzip and run Kontinuum. The binaries are not signed: on Windows click More info > Run anyway; on macOS right-click Kontinuum.app > Open the first time."
+            --notes "Downloads for Windows (an installer, or a zip), macOS (Apple silicon and Intel) and Linux (x64 and Arm). Install, or unzip and run Kontinuum. The binaries are not signed: on Windows click More info > Run anyway; on macOS right-click Kontinuum.app > Open the first time."

@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! Kontinuum [--seed N] [--recipe N] [--play] [--stage] [--size WxH] [--screenshot OUT.png]
+//! Kontinuum --server [server.toml]   (no window, no sound card: streams on its own)
 //! ```
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
@@ -14,6 +15,7 @@ mod midi;
 mod promo;
 mod record;
 mod scene;
+mod server;
 mod stage;
 mod stream;
 mod theme;
@@ -37,6 +39,20 @@ impl eframe::App for Kontinuum {
 }
 
 fn main() -> eframe::Result {
+    // the server mode: no window, no sound card (`--server [settings.toml]`)
+    let all: Vec<String> = std::env::args().collect();
+    if let Some(k) = all.iter().position(|a| a == "--server") {
+        let path = all
+            .get(k + 1)
+            .filter(|a| !a.starts_with("--"))
+            .map(PathBuf::from)
+            .unwrap_or_else(server::default_path);
+        if let Err(e) = server::run(path) {
+            eprintln!("Kontinuum: {e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     let mut seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() % 100_000)
